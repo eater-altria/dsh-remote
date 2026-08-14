@@ -1,0 +1,465 @@
+/// Riverpod state: server profile, connection lifecycle, session roster, and
+/// per-session chat controllers.
+library;
+
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../api/client.dart';
+import '../api/fold.dart';
+import '../api/models.dart';
+import '../api/wire.dart';
+
+// ---------------------------------------------------------------------------
+// Server profile (persisted)
+// ---------------------------------------------------------------------------
+
+const _kServerUrlKey = 'dsh.serverUrl';
+
+class ServerProfileNotifier extends Notifier<String?> {
+  @override
+  String? build() {
+    _load();
+    return null;
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getString(_kServerUrlKey);
+  }
+
+  Future<void> setUrl(String url) async {
+    final normalized = normalizeBaseUrl(url);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kServerUrlKey, normalized);
+    state = normalized;
+  }
+
+  Future<void> clear() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kServerUrlKey);
+    state = null;
+  }
+}
+
+/// Normalize user input into `http://host:port` form.
+String normalizeBaseUrl(String input) {
+  var url = input.trim();
+  if (url.isEmpty) return url;
+  if (!url.contains('://')) url = 'http://$url';
+  while (url.endsWith('/')) {
+    url = url.substring(0, url.length - 1);
+  }
+  return url;
+}
+
+final serverProfileProvider = NotifierProvider<ServerProfileNotifier, String?>(ServerProfileNotifier.new);
+
+/// Factory for one-shot low-level API handles against an arbitrary base URL
+/// (used by the setup probe before a profile exists).
+final apiFactoryProvider = Provider<DshApi Function(String)>((ref) {
+  return (String baseUrl) => DshApi(baseUrl);
+});
+
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+class ConnectionNotifier extends Notifier<DshConnection?> {
+  @override
+  DshConnection? build() {
+    final url = ref.watch(serverProfileProvider);
+    if (url == null || url.isEmpty) {
+      return null;
+    }
+    final connection = DshConnection(url);
+    ref.onDispose(() => connection.dispose());
+    unawaited(connection.connect());
+    return connection;
+  }
+
+  Future<void> reconnect() async => state?.connect();
+
+  Future<void> disconnect() async {
+    await state?.disconnect();
+    await ref.read(serverProfileProvider.notifier).clear();
+  }
+}
+
+final connectionProvider = NotifierProvider<ConnectionNotifier, DshConnection?>(ConnectionNotifier.new);
+
+// ---------------------------------------------------------------------------
+// Roster (workspaces + sessions)
+// ---------------------------------------------------------------------------
+
+class RosterState {
+  RosterState({
+    this.workspaces = const [],
+    this.sessions = const [],
+    this.archivedSessionIds = const {},
+    this.loading = false,
+    this.error,
+  });
+
+  final List<WorkspaceView> workspaces;
+  final List<SessionSummary> sessions;
+  final Set<String> archivedSessionIds;
+  final bool loading;
+  final String? error;
+
+  RosterState copyWith({
+    List<WorkspaceView>? workspaces,
+    List<SessionSummary>? sessions,
+    Set<String>? archivedSessionIds,
+    bool? loading,
+    String? Function()? error,
+  }) =>
+      RosterState(
+        workspaces: workspaces ?? this.workspaces,
+        sessions: sessions ?? this.sessions,
+        archivedSessionIds: archivedSessionIds ?? this.archivedSessionIds,
+        loading: loading ?? this.loading,
+        error: error != null ? error() : this.error,
+      );
+}
+
+class RosterNotifier extends Notifier<RosterState> {
+  StreamSubscription? _hostSub;
+  void Function()? _statusListener;
+
+  @override
+  RosterState build() {
+    final connection = ref.watch(connectionProvider);
+    _hostSub?.cancel();
+    if (connection == null) return RosterState();
+
+    _hostSub = connection.hostFrames.listen((frame) {
+      final type = frame.payload['type'];
+      // Any roster-affecting frame triggers a refetch (the list is the
+      // reconnect authority; increments arrive in either order).
+      if (type is String && type.startsWith('host/') && type != 'host/agent-error' && type != 'host/remote-event') {
+        unawaited(refresh());
+      }
+    });
+    // (Re)fetch whenever the connection reaches `connected`.
+    void listener() {
+      if (connection.status == ConnStatus.connected) unawaited(refresh());
+    }
+
+    _statusListener = listener;
+    connection.addListener(listener);
+    ref.onDispose(() {
+      _hostSub?.cancel();
+      if (_statusListener != null) connection.removeListener(_statusListener!);
+    });
+
+    if (connection.status == ConnStatus.connected) unawaited(refresh());
+    return RosterState(loading: true);
+  }
+
+  Future<void> refresh() async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null || connection.status != ConnStatus.connected) return;
+    state = state.copyWith(loading: true);
+    try {
+      final results = await Future.wait([
+        connection.api.rpc('workspace.list'),
+        connection.api.rpc('session.list'),
+      ]);
+      final wsValue = (results[0] as Map).cast<String, dynamic>();
+      final ssValue = (results[1] as Map).cast<String, dynamic>();
+      state = RosterState(
+        workspaces: (wsValue['items'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(WorkspaceView.fromJson)
+                .toList() ??
+            const [],
+        sessions: (ssValue['items'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(SessionSummary.fromJson)
+                .toList() ??
+            const [],
+        archivedSessionIds:
+            (wsValue['archivedSessionIds'] as List?)?.whereType<String>().toSet() ?? const {},
+        loading: false,
+      );
+    } catch (e) {
+      state = state.copyWith(loading: false, error: () => e.toString());
+    }
+  }
+}
+
+final rosterProvider = NotifierProvider<RosterNotifier, RosterState>(RosterNotifier.new);
+
+// ---------------------------------------------------------------------------
+// Chat (per session)
+// ---------------------------------------------------------------------------
+
+class ChatState {
+  ChatState({
+    required this.sessionId,
+    this.fold,
+    this.loadingHistory = true,
+    this.historyError,
+    this.hasMore = false,
+    this.pendingQuestion,
+    this.pendingApproval,
+    this.queue = const [],
+    this.sending = false,
+  });
+
+  final String sessionId;
+  final ChatFold? fold;
+  final bool loadingHistory;
+  final String? historyError;
+  final bool hasMore;
+  final PendingQuestion? pendingQuestion;
+  final PendingApproval? pendingApproval;
+  final List<QueueItem> queue;
+  final bool sending;
+
+  List<ChatItem> get items => fold?.items ?? const [];
+  bool get running => fold?.running ?? false;
+  String? get title => fold?.title;
+
+  ChatState copyWith({
+    ChatFold? fold,
+    bool? loadingHistory,
+    String? Function()? historyError,
+    bool? hasMore,
+    PendingQuestion? Function()? pendingQuestion,
+    PendingApproval? Function()? pendingApproval,
+    List<QueueItem>? queue,
+    bool? sending,
+  }) =>
+      ChatState(
+        sessionId: sessionId,
+        fold: fold ?? this.fold,
+        loadingHistory: loadingHistory ?? this.loadingHistory,
+        historyError: historyError != null ? historyError() : this.historyError,
+        hasMore: hasMore ?? this.hasMore,
+        pendingQuestion: pendingQuestion != null ? pendingQuestion() : this.pendingQuestion,
+        pendingApproval: pendingApproval != null ? pendingApproval() : this.pendingApproval,
+        queue: queue ?? this.queue,
+        sending: sending ?? this.sending,
+      );
+}
+
+class ChatNotifier extends FamilyNotifier<ChatState, String> {
+  StreamSubscription? _muxSub;
+  void Function()? _statusListener;
+  int _historyGeneration = 0;
+
+  @override
+  ChatState build(String arg) {
+    final connection = ref.watch(connectionProvider);
+    _muxSub?.cancel();
+    final chat = ChatState(sessionId: arg, fold: ChatFold());
+    if (connection == null) {
+      return chat.copyWith(loadingHistory: false, historyError: () => '未连接');
+    }
+
+    _muxSub = connection.muxFrames.listen(_onMuxFrame);
+    // (Re)load history whenever the connection (re)establishes — a reconnect
+    // generation replays missed frames only for still-live sessions.
+    void listener() {
+      if (connection.status == ConnStatus.connected && !state.loadingHistory) {
+        unawaited(_loadHistory());
+      }
+    }
+
+    _statusListener = listener;
+    connection.addListener(listener);
+    ref.onDispose(() {
+      _muxSub?.cancel();
+      if (_statusListener != null) connection.removeListener(_statusListener!);
+    });
+    if (connection.status == ConnStatus.connected) {
+      unawaited(_loadHistory());
+    }
+    return chat;
+  }
+
+  Future<void> _loadHistory({int? beforeSeq}) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    final generation = ++_historyGeneration;
+    try {
+      final value = await connection.api.rpc('session.history', {
+        'sessionId': arg,
+        'beforeSeq': ?beforeSeq,
+        'maxMessages': 200,
+      });
+      if (generation != _historyGeneration) return;
+      final map = (value as Map).cast<String, dynamic>();
+      final events = (map['events'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+      // Tail page (re)loads rebuild the fold from scratch; older pages prepend.
+      final fold = beforeSeq == null ? ChatFold() : (state.fold ?? ChatFold());
+      if (beforeSeq != null) {
+        final older = ChatFold();
+        for (final entry in events) {
+          final event = entry['event'];
+          if (event is Map<String, dynamic>) older.applyEvent(event);
+        }
+        fold.items = [...older.items, ...fold.items];
+      } else {
+        for (final entry in events) {
+          final event = entry['event'];
+          if (event is Map<String, dynamic>) fold.applyEvent(event);
+        }
+      }
+      // Title also rides the projections block on the tail page.
+      final projections = map['projections'];
+      if (projections is Map<String, dynamic>) {
+        final values = projections['values'];
+        if (values is Map<String, dynamic>) {
+          final t = values['title'];
+          if (t is String && t.isNotEmpty) fold.title = t;
+        }
+      }
+      state = state.copyWith(
+        fold: fold,
+        loadingHistory: false,
+        hasMore: map['hasMore'] == true,
+        historyError: () => null,
+      );
+    } catch (e) {
+      if (generation != _historyGeneration) return;
+      state = state.copyWith(loadingHistory: false, historyError: () => e.toString());
+    }
+  }
+
+  /// Page older history (prepended). No-op while the tail is still loading.
+  Future<void> loadOlder() async {
+    if (state.loadingHistory || !state.hasMore) return;
+    final firstSeq = state.items.isEmpty ? null : state.items.first.seq;
+    if (firstSeq == null || firstSeq <= 0) return;
+    await _loadHistory(beforeSeq: firstSeq);
+  }
+
+  void _onMuxFrame(ServerRequestFrame frame) {
+    final payload = frame.payload;
+    final type = payload['type'] as String? ?? '';
+    if (payload['sessionId'] != arg) return;
+    final fold = state.fold ?? ChatFold();
+
+    switch (type) {
+      case 'session/event':
+        final event = payload['event'];
+        if (event is Map<String, dynamic>) {
+          fold.applyEvent(event);
+          state = state.copyWith(fold: fold);
+        }
+      case 'question/requested':
+        final questions = (payload['questions'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(QuestionItem.fromJson)
+                .toList() ??
+            const [];
+        state = state.copyWith(
+          pendingQuestion: () => PendingQuestion(rpcId: frame.rpcId, sessionId: arg, questions: questions),
+        );
+      case 'question/resolved':
+        state = state.copyWith(pendingQuestion: () => null);
+      case 'approval/requested':
+        state = state.copyWith(
+          pendingApproval: () => PendingApproval(
+            rpcId: frame.rpcId,
+            sessionId: arg,
+            approvalId: payload['approvalId'] as String? ?? '',
+            toolName: payload['toolName'] as String? ?? '',
+            callId: payload['callId'] as String?,
+            reason: payload['reason'] as String?,
+          ),
+        );
+      case 'approval/resolved':
+        state = state.copyWith(pendingApproval: () => null);
+      case 'session/queue':
+        final items = (payload['items'] as List?)?.whereType<Map<String, dynamic>>().map((item) {
+              final message = item['message'];
+              var text = '';
+              if (message is Map<String, dynamic>) {
+                final content = message['content'];
+                if (content is List) {
+                  text = content
+                      .whereType<Map<String, dynamic>>()
+                      .where((b) => b['type'] == 'text')
+                      .map((b) => b['text'] as String? ?? '')
+                      .join('\n');
+                }
+              }
+              return QueueItem(
+                id: item['id'] as String? ?? '',
+                placement: item['placement'] as String? ?? 'queued',
+                text: text,
+              );
+            }).toList() ??
+            const [];
+        state = state.copyWith(queue: items);
+      case 'session/projection':
+        if (payload['key'] == 'title') {
+          final value = payload['value'];
+          if (value is String && value.isNotEmpty) {
+            fold.title = value;
+            state = state.copyWith(fold: fold);
+          }
+        }
+      default:
+        break;
+    }
+  }
+
+  /// Send a user prompt (queued behind an active turn).
+  Future<void> sendPrompt(String text) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null || text.trim().isEmpty) return;
+    state = state.copyWith(sending: true);
+    try {
+      await connection.api.rpc('session.prompt', {
+        'sessionId': arg,
+        'mode': 'queue',
+        'content': [
+          {'type': 'text', 'text': text},
+        ],
+      });
+    } finally {
+      state = state.copyWith(sending: false);
+    }
+  }
+
+  /// Cancel the active turn (pending queue is preserved).
+  Future<void> cancel() async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    await connection.api.rpc('session.cancel', {'sessionId': arg});
+  }
+
+  /// Answer the pending question prompt.
+  Future<void> answerQuestion(List<Map<String, dynamic>> answers) async {
+    final connection = ref.read(connectionProvider);
+    final pending = state.pendingQuestion;
+    if (connection == null || pending == null) return;
+    await connection.api.respond(pending.rpcId, {
+      'sessionId': arg,
+      'answer': {'answers': answers},
+    });
+    state = state.copyWith(pendingQuestion: () => null);
+  }
+
+  /// Answer the pending approval prompt.
+  Future<void> answerApproval(bool approved) async {
+    final connection = ref.read(connectionProvider);
+    final pending = state.pendingApproval;
+    if (connection == null || pending == null) return;
+    await connection.api.respond(pending.rpcId, {
+      'sessionId': arg,
+      'approvalId': pending.approvalId,
+      'outcome': approved ? 'allowed-once' : 'rejected',
+    });
+    state = state.copyWith(pendingApproval: () => null);
+  }
+}
+
+final chatProvider = NotifierProvider.family<ChatNotifier, ChatState, String>(ChatNotifier.new);
