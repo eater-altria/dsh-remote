@@ -5,6 +5,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../state/providers.dart';
 import 'chat_page.dart';
+import 'theme.dart';
 
 /// Session roster: workspaces with their sessions, plus ungrouped sessions.
 class HomePage extends ConsumerWidget {
@@ -93,9 +94,10 @@ class HomePage extends ConsumerWidget {
         onNewSession: () => _createSession(context, ref, workspaceId: workspace.workspaceId),
       ));
       if (sessions.isEmpty) {
-        sections.add(const Padding(
-          padding: EdgeInsets.only(left: 16, bottom: 8),
-          child: Text('（无会话）', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        sections.add(Padding(
+          padding: const EdgeInsets.only(left: 16, bottom: 8),
+          child: Text('（无会话）',
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline)),
         ));
       } else {
         sections.addAll(sessions.map((s) => _SessionTile(session: s)));
@@ -115,13 +117,13 @@ class HomePage extends ConsumerWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.forum_outlined, size: 48, color: Colors.grey),
+            const NekoMascot(size: 88),
             const SizedBox(height: 12),
-            const Text('还没有会话'),
+            const Text('还没有会话，去发起第一段对话吧'),
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: () => _createSession(context, ref),
-              icon: const Icon(Icons.add),
+              icon: const PawIcon(size: 18),
               label: const Text('新建会话'),
             ),
           ],
@@ -200,12 +202,13 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final (color, label) = switch (connection.status) {
-      ConnStatus.connected => (Colors.greenAccent, '已连接'),
-      ConnStatus.connecting => (Colors.orangeAccent, '连接中'),
-      ConnStatus.reconnecting => (Colors.orangeAccent, '重连中'),
-      ConnStatus.failed => (Colors.redAccent, '失败'),
-      ConnStatus.disconnected => (Colors.grey, '离线'),
+      ConnStatus.connected => (scheme.tertiary, '已连接'),
+      ConnStatus.connecting => (scheme.secondary, '连接中'),
+      ConnStatus.reconnecting => (scheme.secondary, '重连中'),
+      ConnStatus.failed => (scheme.error, '失败'),
+      ConnStatus.disconnected => (scheme.outline, '离线'),
     };
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -280,7 +283,7 @@ class _SessionTile extends ConsumerWidget {
       leading: Icon(
         Icons.chat_bubble_outline,
         size: 18,
-        color: session.running ? Colors.greenAccent : null,
+        color: session.running ? Theme.of(context).colorScheme.tertiary : null,
       ),
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(

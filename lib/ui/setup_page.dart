@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/providers.dart';
+import 'theme.dart';
 
 /// First-run server setup: enter the DSH host address (host:port or URL).
 class SetupPage extends ConsumerStatefulWidget {
@@ -56,9 +57,9 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Icon(Icons.terminal, size: 56, color: theme.colorScheme.primary),
+                  const NekoMascot(size: 104),
                   const SizedBox(height: 16),
-                  Text('DSH Remote', style: theme.textTheme.headlineMedium, textAlign: TextAlign.center),
+                  Text('DSH Remote', style: theme.textTheme.displaySmall, textAlign: TextAlign.center),
                   const SizedBox(height: 8),
                   Text(
                     '连接到你的 DeepSeek Harness 主机',
@@ -70,9 +71,8 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                     controller: _controller,
                     decoration: const InputDecoration(
                       labelText: '主机地址',
-                      hintText: '192.168.1.5:3080',
+                      hintText: '192.168.1.5:3081',
                       prefixIcon: Icon(Icons.dns_outlined),
-                      border: OutlineInputBorder(),
                     ),
                     keyboardType: TextInputType.url,
                     autocorrect: false,
@@ -83,7 +83,7 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                     onPressed: _testing ? null : _connect,
                     icon: _testing
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.link),
+                        : const PawIcon(size: 18),
                     label: Text(_testing ? '连接中…' : '连接'),
                   ),
                   if (_error != null) ...[
@@ -101,8 +101,8 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                   ],
                   const SizedBox(height: 32),
                   Text(
-                    '提示：主机需以 `dsh web --host 0.0.0.0` 启动并把手机访问地址加入 trustedHosts，'
-                    '或与手机处于同一局域网网段。',
+                    '提示：在主机上运行 `node relay/dsh-relay.mjs` 启动局域网中继，'
+                    '手机与主机连同一 Wi-Fi 后填写中继地址（默认端口 3081）。',
                     style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
                     textAlign: TextAlign.center,
                   ),

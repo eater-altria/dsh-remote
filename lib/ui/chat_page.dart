@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/fold.dart';
 import '../api/models.dart';
 import '../state/providers.dart';
+import 'theme.dart';
 
 /// Chat surface for one session: history, streaming replies, tool cards,
 /// question / approval interactions, and the composer.
@@ -92,7 +93,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       );
     }
     if (chat.items.isEmpty) {
-      return const Center(child: Text('开始新的对话吧'));
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            NekoMascot(size: 72),
+            SizedBox(height: 12),
+            Text('开始新的对话吧'),
+          ],
+        ),
+      );
     }
     return ListView.builder(
       controller: _scroll,
@@ -119,6 +129,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Widget _buildComposer(ChatState chat, ChatNotifier notifier) {
+    final theme = Theme.of(context);
     return SafeArea(
       top: false,
       child: Padding(
@@ -142,6 +153,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ),
             const SizedBox(width: 8),
             IconButton.filled(
+              style: IconButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
               onPressed: chat.sending
                   ? null
                   : () async {
@@ -160,7 +172,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                     },
               icon: chat.sending
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.send),
+                  : const PawIcon(size: 20),
             ),
           ],
         ),
@@ -210,24 +222,28 @@ class _UserBubble extends StatelessWidget {
     final theme = Theme.of(context);
     return Align(
       alignment: Alignment.centerRight,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.primaryContainer,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (item.imageCount > 0)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text('📷 ×${item.imageCount}', style: theme.textTheme.bodySmall),
-              ),
-            Text(item.text, style: TextStyle(color: theme.colorScheme.onPrimaryContainer)),
-          ],
+      child: Padding(
+        // 给头顶的猫耳留出空间
+        padding: const EdgeInsets.only(top: 8),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
+          decoration: ShapeDecoration(
+            color: theme.colorScheme.secondaryContainer,
+            shape: CatEarBubbleShape(borderRadius: BorderRadius.circular(18)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (item.imageCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text('📷 ×${item.imageCount}', style: theme.textTheme.bodySmall),
+                ),
+              Text(item.text, style: TextStyle(color: theme.colorScheme.onSecondaryContainer)),
+            ],
+          ),
         ),
       ),
     );
@@ -242,12 +258,18 @@ class _AssistantRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.92),
+        decoration: BoxDecoration(
+          color: isDark ? theme.colorScheme.surfaceContainer : NekoColors.bubbleBlue,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -303,7 +325,7 @@ class _ToolCard extends StatelessWidget {
         ? theme.colorScheme.outline
         : item.isError
             ? theme.colorScheme.error
-            : Colors.greenAccent;
+            : theme.colorScheme.tertiary;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       child: _Collapsible(
