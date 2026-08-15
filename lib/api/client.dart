@@ -97,6 +97,7 @@ class DshConnection extends ChangeNotifier {
 
   final _muxController = StreamController<ServerRequestFrame>.broadcast();
   final _hostController = StreamController<ServerRequestFrame>.broadcast();
+  final _pushController = StreamController<Map<String, dynamic>>.broadcast();
 
   /// Mux downlink frames (session/event, approvals, questions, queue, jobs…).
   Stream<ServerRequestFrame> get muxFrames => _muxController.stream;
@@ -104,10 +105,15 @@ class DshConnection extends ChangeNotifier {
   /// Host downlink frames (session/workspace roster changes…).
   Stream<ServerRequestFrame> get hostFrames => _hostController.stream;
 
+  /// relay 文件推送事件（{kind:'push', id, name, bytes, title, ts}）。
+  Stream<Map<String, dynamic>> get pushEvents => _pushController.stream;
+
   WebSocketChannel? _muxSocket;
   WebSocketChannel? _hostSocket;
+  WebSocketChannel? _pushSocket;
   StreamSubscription? _muxSub;
   StreamSubscription? _hostSub;
+  StreamSubscription? _pushSub;
   Timer? _reconnectTimer;
   int _generation = 0;
   bool _disposed = false;
@@ -131,6 +137,7 @@ class DshConnection extends ChangeNotifier {
       final hostReady = Completer<void>();
       _openSocket('events.mux', _muxController, muxReady, (ch) => _muxSocket = ch, (s) => _muxSub = s, generation);
       _openSocket('events.host', _hostController, hostReady, (ch) => _hostSocket = ch, (s) => _hostSub = s, generation);
+      _openOutboxSocket(generation);
       final describe = await api.rpc('host.describe');
       await Future.wait([muxReady.future, hostReady.future]).timeout(const Duration(seconds: 15));
       if (_disposed || generation != _generation) return;
@@ -197,6 +204,35 @@ class DshConnection extends ChangeNotifier {
     });
   }
 
+  /// relay 的 outbox 推送通道（/__relay/outbox，relay 私有，不过 host）。
+  /// 失败静默降级（旧版 relay 没有这条通道），不参与就绪握手。
+  void _openOutboxSocket(int generation) {
+    try {
+      final channel = IOWebSocketChannel.connect(
+        Uri.parse('$_wsBase/__relay/outbox'),
+        headers: {
+          if (token != null && token!.isNotEmpty) 'x-relay-token': token!,
+        },
+      );
+      _pushSocket = channel;
+      _pushSub = channel.stream.listen(
+        (data) {
+          if (data is String && !_pushController.isClosed) {
+            try {
+              final json = jsonDecode(data);
+              if (json is Map<String, dynamic> && json['kind'] == 'push') {
+                _pushController.add(json);
+              }
+            } catch (_) {}
+          }
+        },
+        onDone: () => _onSocketEnded(generation),
+        onError: (_) {}, // 通道不可用时静默
+        cancelOnError: false,
+      );
+    } catch (_) {}
+  }
+
   void _onSocketEnded(int generation) {
     if (_disposed || generation != _generation) return;
     if (status == ConnStatus.connected || status == ConnStatus.reconnecting) {
@@ -214,16 +250,22 @@ class DshConnection extends ChangeNotifier {
   Future<void> _tearDownSockets() async {
     await _muxSub?.cancel();
     await _hostSub?.cancel();
+    await _pushSub?.cancel();
     _muxSub = null;
     _hostSub = null;
+    _pushSub = null;
     try {
       await _muxSocket?.sink.close();
     } catch (_) {}
     try {
       await _hostSocket?.sink.close();
     } catch (_) {}
+    try {
+      await _pushSocket?.sink.close();
+    } catch (_) {}
     _muxSocket = null;
     _hostSocket = null;
+    _pushSocket = null;
   }
 
   void _setStatus(ConnStatus next) {
@@ -246,6 +288,7 @@ class DshConnection extends ChangeNotifier {
     _tearDownSockets();
     _muxController.close();
     _hostController.close();
+    _pushController.close();
     api.dispose();
     super.dispose();
   }

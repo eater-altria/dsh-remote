@@ -17,7 +17,9 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 const listenPort = Number(process.argv[2] ?? process.env.DSH_RELAY_PORT ?? 3081);
 const targetHost = process.argv[3] ?? process.env.DSH_TARGET_HOST ?? '127.0.0.1';
@@ -181,6 +183,146 @@ async function handleListDir(req, res) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 文件推送（agent → 手机系统下载器）
+// ---------------------------------------------------------------------------
+//
+//   POST /__relay/push          {path, title?}  仅 loopback 调用（agent 在本机）
+//   GET  /__relay/files/<id>    下载（?token= 或 x-relay-token 头）
+//   GET  /__relay/outbox        最近的推送列表（App 收件箱/补拉）
+//   WS   /__relay/outbox        推送事件实时广播（{kind:'push', ...meta}）
+//
+// 暂存目录：~/.dsh/dsh-remote-files/<id>/<原文件名> + meta.json。
+
+const filesStoreDir = path.join(os.homedir(), '.dsh', 'dsh-remote-files');
+const outboxSockets = new Set();
+const recentPushes = []; // 内存收件箱（最多保留 50 条）
+
+async function handlePush(req, res) {
+  // 推送只能由主机本机发起（agent 运行在 host 上）。
+  const remote = req.socket.remoteAddress;
+  if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'push is loopback-only' }));
+    return;
+  }
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    const srcPath = body.path;
+    if (typeof srcPath !== 'string' || !path.isAbsolute(srcPath)) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'path must be an absolute path' }));
+      return;
+    }
+    const stat = await fs.stat(srcPath);
+    if (!stat.isFile()) throw new Error('not a regular file');
+    const id = crypto.randomUUID();
+    const name = path.basename(srcPath);
+    const dir = path.join(filesStoreDir, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.copyFile(srcPath, path.join(dir, name));
+    const meta = {
+      id,
+      name,
+      bytes: stat.size,
+      title: typeof body.title === 'string' ? body.title : name,
+      ts: Date.now(),
+    };
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2));
+    recentPushes.push(meta);
+    if (recentPushes.length > 50) recentPushes.shift();
+    // 广播给所有 outbox 订阅者（手机 App）。
+    const frame = JSON.stringify({ kind: 'push', ...meta });
+    for (const socket of outboxSockets) {
+      try {
+        socket.write(encodeWsText(frame));
+      } catch {}
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(meta));
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `push failed: ${err.message}` }));
+  }
+}
+
+async function handleFileDownload(req, res, id) {
+  if (!/^[A-Za-z0-9-]+$/.test(id)) {
+    res.writeHead(400).end('bad id');
+    return;
+  }
+  try {
+    const dir = path.join(filesStoreDir, id);
+    const meta = JSON.parse(await fs.readFile(path.join(dir, 'meta.json'), 'utf8'));
+    const filePath = path.join(dir, meta.name);
+    const stat = await fs.stat(filePath);
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-length': stat.size,
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
+    });
+    createReadStream(filePath).pipe(res);
+  } catch {
+    res.writeHead(404).end('not found');
+  }
+}
+
+function handleOutboxList(res) {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ items: recentPushes.slice().reverse() }));
+}
+
+/** 最小 RFC6455 文本帧编码（服务器→客户端，无掩码）。 */
+function encodeWsText(text) {
+  const payload = Buffer.from(text, 'utf8');
+  const len = payload.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.from([0x81, len]);
+  } else if (len < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+/** relay 自己的 WS 握手（不转发 host）：/__relay/outbox 推送广播。 */
+function handleOutboxUpgrade(req, socket) {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) {
+    socket.destroy();
+    return;
+  }
+  const accept = crypto
+    .createHash('sha1')
+    .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+    .digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Upgrade: websocket\r\n' +
+      'Connection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  outboxSockets.add(socket);
+  // 连接即补发最近推送（断线重连不缺通知）。
+  for (const meta of recentPushes.slice(-5)) {
+    socket.write(encodeWsText(JSON.stringify({ kind: 'push', ...meta })));
+  }
+  // 客户端帧不解析（推送是纯下行）；关闭/错误即清理。
+  socket.on('data', () => {});
+  socket.on('close', () => outboxSockets.delete(socket));
+  socket.on('error', () => outboxSockets.delete(socket));
+}
+
 const server = http.createServer((req, res) => {
   if (!authorized(req)) {
     res.writeHead(401, { 'content-type': 'text/plain' });
@@ -193,6 +335,19 @@ const server = http.createServer((req, res) => {
   }
   if (req.url?.startsWith('/__relay/listDir') && req.method === 'GET') {
     handleListDir(req, res);
+    return;
+  }
+  if (req.url === '/__relay/push' && req.method === 'POST') {
+    handlePush(req, res);
+    return;
+  }
+  const fileMatch = req.url?.match(/^\/__relay\/files\/([A-Za-z0-9-]+)/);
+  if (fileMatch && req.method === 'GET') {
+    handleFileDownload(req, res, fileMatch[1]);
+    return;
+  }
+  if (req.url?.startsWith('/__relay/outbox') && req.method === 'GET') {
+    handleOutboxList(res);
     return;
   }
   const upstream = http.request(
@@ -219,6 +374,11 @@ server.on('upgrade', (req, socket, head) => {
   if (!authorized(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
+    return;
+  }
+  // relay 自己的推送通道不转发 host。
+  if (req.url === '/__relay/outbox') {
+    handleOutboxUpgrade(req, socket);
     return;
   }
   const upstream = net.connect(targetPort, targetHost, () => {

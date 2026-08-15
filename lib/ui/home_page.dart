@@ -1,19 +1,101 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'dart:async';
+
 import '../api/client.dart';
+import '../api/download_service.dart';
 import '../api/models.dart';
 import '../state/providers.dart';
 import 'chat_page.dart';
+import 'inbox_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
 
 /// Session roster: workspaces with their sessions, plus ungrouped sessions.
-class HomePage extends ConsumerWidget {
+class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends ConsumerState<HomePage> {
+  StreamSubscription<Map<String, dynamic>>? _pushSub;
+  final Set<String> _seenPushes = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // relay 文件推送：连上后订阅（connection 实例随重连更换，用 provider 监听）。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _listenPushes());
+  }
+
+  void _listenPushes() {
+    ref.listenManual(connectionProvider, (previous, connection) {
+      _pushSub?.cancel();
+      _pushSub = connection?.pushEvents.listen(_onPush);
+    }, fireImmediately: true);
+  }
+
+  void _onPush(Map<String, dynamic> meta) {
+    final id = meta['id'] as String? ?? '';
+    if (id.isEmpty || !_seenPushes.add(id)) return; // 补发去重
+    if (!mounted) return;
+    final name = meta['name'] as String? ?? '文件';
+    final bytes = (meta['bytes'] as num?)?.toInt() ?? 0;
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.download_outlined),
+        title: const Text('收到文件'),
+        content: Text('$name（${_formatBytes(bytes)}）\n保存到手机「下载」目录？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('忽略')),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _download(meta);
+            },
+            child: const Text('保存到手机'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _download(Map<String, dynamic> meta) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    final ok = await launchFileDownload(
+      baseUrl: connection.baseUrl,
+      token: connection.token,
+      fileId: meta['id'] as String? ?? '',
+      fileName: meta['name'] as String? ?? 'download',
+      title: meta['title'] as String?,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ok ? '已开始下载，进度见通知栏' : '下载失败')),
+      );
+    }
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  void dispose() {
+    _pushSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ref = this.ref;
     final roster = ref.watch(rosterProvider);
     final connection = ref.watch(connectionProvider);
     final theme = Theme.of(context);
@@ -50,6 +132,10 @@ class HomePage extends ConsumerWidget {
                 await Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const SettingsPage()),
                 );
+              } else if (value == 'inbox') {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const InboxPage()),
+                );
               } else if (value == 'theme') {
                 final current = ref.read(themeModeProvider);
                 final chosen = await showModalBottomSheet<String>(
@@ -81,6 +167,7 @@ class HomePage extends ConsumerWidget {
             },
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'new_workspace', child: Text('新建 Workspace')),
+              PopupMenuItem(value: 'inbox', child: Text('文件收件箱')),
               PopupMenuItem(value: 'theme', child: Text('外观主题')),
               PopupMenuItem(value: 'settings', child: Text('设置')),
               PopupMenuItem(value: 'disconnect', child: Text('断开连接')),

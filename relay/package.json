@@ -1,0 +1,10 @@
+{
+  "name": "dsh-remote-relay",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.0"
+  }
+}
