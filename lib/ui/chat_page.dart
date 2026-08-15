@@ -134,6 +134,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(chat.title ?? '会话'),
+          bottom: _ContextUsageBar.fromProjections(chat.projections),
         actions: [
           if (chat.running)
             IconButton(
@@ -1307,6 +1308,12 @@ class _GoalBanner extends ConsumerWidget {
               tooltip: '标记完成',
               onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('complete'),
             ),
+          if (goal.phase == 'complete' || goal.phase == 'blocked')
+            IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              tooltip: '关闭目标横幅',
+              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('clear'),
+            ),
         ],
       ),
     );
@@ -1869,6 +1876,70 @@ class _WorkingIndicatorState extends State<_WorkingIndicator>
                 ),
               );
             },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 上下文占用进度条（design.md：薄荷→奶蓝→西瓜红三档语义色）。
+/// 数据源：`contextPressure` 投影（token-meter 包）：projectedTokens ?? pressureTokens
+/// 是近似占用（last-wins 参考值），contextWindow 为模型窗口容量。
+class _ContextUsageBar extends StatelessWidget implements PreferredSizeWidget {
+  const _ContextUsageBar({required this.usedTokens, required this.contextWindow});
+
+  final int usedTokens;
+  final int contextWindow;
+
+  /// 从会话投影构建；数据不足时不占位。
+  static PreferredSizeWidget? fromProjections(Map<String, dynamic> projections) {
+    final raw = projections['contextPressure'];
+    if (raw is! Map<String, dynamic>) return null;
+    final used = (raw['projectedTokens'] as num?)?.toInt() ?? (raw['pressureTokens'] as num?)?.toInt();
+    final window = (raw['contextWindow'] as num?)?.toInt();
+    if (used == null || window == null || window <= 0) return null;
+    return _ContextUsageBar(usedTokens: used, contextWindow: window);
+  }
+
+  static String _fmt(int tokens) {
+    if (tokens >= 1000000) return '${(tokens / 1000000).toStringAsFixed(1)}M';
+    if (tokens >= 1000) return '${(tokens / 1000).toStringAsFixed(1)}K';
+    return '$tokens';
+  }
+
+  @override
+  Size get preferredSize => const Size.fromHeight(18);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final ratio = (usedTokens / contextWindow).clamp(0.0, 1.0);
+    final percent = (ratio * 100).round();
+    final color = percent < 60
+        ? scheme.tertiary
+        : percent < 85
+            ? scheme.primary
+            : scheme.error;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: ratio,
+                minHeight: 5,
+                backgroundColor: scheme.surfaceContainerHigh,
+                valueColor: AlwaysStoppedAnimation(color),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            '${_fmt(usedTokens)}/${_fmt(contextWindow)} · $percent%',
+            style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant, fontFamily: 'monospace'),
           ),
         ],
       ),
