@@ -107,10 +107,28 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                     Card(
                       color: theme.colorScheme.errorContainer,
                       child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(
-                          _error!,
-                          style: TextStyle(color: theme.colorScheme.onErrorContainer, fontSize: 12),
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('连接失败',
+                                style: TextStyle(
+                                    color: theme.colorScheme.onErrorContainer,
+                                    fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 4),
+                            Text(
+                              _error!,
+                              style: TextStyle(color: theme.colorScheme.onErrorContainer, fontSize: 12),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '确认 relay 已在主机上运行（launchd 服务或 node relay/dsh-relay.mjs），'
+                              '且手机与主机在同一 Wi-Fi。',
+                              style: TextStyle(
+                                  color: theme.colorScheme.onErrorContainer.withValues(alpha: 0.75),
+                                  fontSize: 11),
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -119,7 +137,7 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                   Text(
                     '提示：在主机上运行 `node relay/dsh-relay.mjs` 启动局域网中继，'
                     '手机与主机连同一 Wi-Fi 后填写中继地址（默认端口 3081）。',
-                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                     textAlign: TextAlign.center,
                   ),
                 ],

@@ -69,18 +69,39 @@ class SettingsPage extends ConsumerWidget {
           child: Text('读取设置失败：\n$e', textAlign: TextAlign.center),
         )),
         data: (items) => ListView(
+          padding: const EdgeInsets.only(top: 8, bottom: 24),
           children: [
             for (final ns in items)
-              ListTile(
-                title: Text(ns.ns, style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),
-                subtitle: Text(
-                  '${(ns.schema['properties'] as Map?)?.length ?? 0} 个字段'
-                  '${ns.applies == 'restart' ? ' · 重启生效' : ''}'
-                  '${ns.secrets.isNotEmpty ? ' · 含 ${ns.secrets.length} 个密钥' : ''}',
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => _NamespacePage(namespace: ns)),
+              Card(
+                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: ListTile(
+                  leading: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.tune,
+                        size: 16, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                  ),
+                  title: Text(ns.ns, style: const TextStyle(fontFamily: 'monospace', fontSize: 14)),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        _NsBadge(label: '${(ns.schema['properties'] as Map?)?.length ?? 0} 字段'),
+                        if (ns.applies == 'restart') const _NsBadge(label: '重启生效', warn: true),
+                        if (ns.secrets.isNotEmpty) _NsBadge(label: '${ns.secrets.length} 密钥'),
+                      ],
+                    ),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => _NamespacePage(namespace: ns)),
+                  ),
                 ),
               ),
           ],
@@ -105,23 +126,42 @@ class _NamespacePage extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          for (final entry in properties.entries)
-            _FieldTile(
-              ns: namespace.ns,
-              path: entry.key,
-              fieldSchema: (entry.value as Map?)?.cast<String, dynamic>() ?? const {},
-              value: current[entry.key],
-              isSecret: namespace.secrets.any((s) => s == entry.key || s.startsWith('${entry.key}.')),
-              isUserOverridden: namespace.user is Map<String, dynamic> &&
-                  (namespace.user as Map<String, dynamic>).containsKey(entry.key),
-              revision: namespace.revision,
+          // design.md §4：同组字段收进一张卡片，分隔线连接
+          Card(
+            child: Column(
+              children: [
+                for (var i = 0; i < properties.entries.length; i++) ...[
+                  () {
+                    final entry = properties.entries.elementAt(i);
+                    return _FieldTile(
+                      ns: namespace.ns,
+                      path: entry.key,
+                      fieldSchema: (entry.value as Map?)?.cast<String, dynamic>() ?? const {},
+                      value: current[entry.key],
+                      isSecret: namespace.secrets
+                          .any((s) => s == entry.key || s.startsWith('${entry.key}.')),
+                      isUserOverridden: namespace.user is Map<String, dynamic> &&
+                          (namespace.user as Map<String, dynamic>).containsKey(entry.key),
+                      revision: namespace.revision,
+                    );
+                  }(),
+                  if (i < properties.entries.length - 1)
+                    Divider(
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16,
+                        color: Theme.of(context).colorScheme.outlineVariant),
+                ],
+              ],
             ),
+          ),
           if (properties.isEmpty)
             Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
                 child: Text('此命名空间没有可编辑字段',
-                    style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline)),
+                    style:
+                        theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
               ),
             ),
         ],
@@ -293,5 +333,33 @@ class _FieldTile extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('保存失败: $e')));
       }
     }
+  }
+}
+
+/// 命名空间属性徽标（design.md §4：chip 全圆角、outlineVariant 描边）。
+class _NsBadge extends StatelessWidget {
+  const _NsBadge({required this.label, this.warn = false});
+
+  final String label;
+  final bool warn;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: warn ? scheme.errorContainer : scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: warn ? scheme.error.withValues(alpha: 0.4) : scheme.outlineVariant),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          color: warn ? scheme.onErrorContainer : scheme.onSurfaceVariant,
+        ),
+      ),
+    );
   }
 }

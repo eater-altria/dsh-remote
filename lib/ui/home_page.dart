@@ -136,7 +136,7 @@ class HomePage extends ConsumerWidget {
         sections.add(Padding(
           padding: const EdgeInsets.only(left: 16, bottom: 8),
           child: Text('（无会话）',
-              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline)),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
         ));
       } else {
         sections.addAll(sessions.map((s) => _SessionTile(session: s)));
@@ -383,21 +383,31 @@ class _WorkspaceHeader extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final scheme = Theme.of(context).colorScheme;
     return GestureDetector(
       onLongPress: () => _onLongPress(context, ref),
       child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 8, 4),
-      child: Row(
-        children: [
-          const Icon(Icons.folder_outlined, size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              workspace.title,
-              style: Theme.of(context).textTheme.titleSmall,
-              overflow: TextOverflow.ellipsis,
+        padding: const EdgeInsets.fromLTRB(16, 16, 8, 4),
+        child: Row(
+          children: [
+            // design.md §4：节标题用 titleSmall；图标用主色淡底圆角徽章
+            Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.folder_outlined, size: 14, color: scheme.onPrimaryContainer),
             ),
-          ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                workspace.title,
+                style: Theme.of(context).textTheme.titleSmall,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.add, size: 18),
               tooltip: '在此 Workspace 新建会话',
@@ -421,22 +431,37 @@ class _SessionTile extends ConsumerWidget {
         ? session.title!
         : (session.cwd != null ? session.cwd!.split('/').last : session.sessionId);
     final updated = DateTime.fromMillisecondsSinceEpoch(session.updatedAt.toInt());
-    return ListTile(
-      dense: true,
-      leading: Icon(
-        Icons.chat_bubble_outline,
-        size: 18,
-        color: session.running ? Theme.of(context).colorScheme.tertiary : null,
-      ),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        '${updated.month}/${updated.day} ${updated.hour.toString().padLeft(2, '0')}:${updated.minute.toString().padLeft(2, '0')}'
-        '${session.running ? ' · 运行中' : ''}',
-        style: const TextStyle(fontSize: 12),
-      ),
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => ChatPage(sessionId: session.sessionId)),
-      ),
+    final scheme = Theme.of(context).colorScheme;
+    // design.md §4：列表项用零阴影卡片 + 描边，水平 12 外边距
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+      child: ListTile(
+        dense: true,
+        leading: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: session.running ? scheme.tertiaryContainer : scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(
+            Icons.chat_bubble_outline,
+            size: 15,
+            color: session.running ? scheme.onTertiaryContainer : scheme.onSurfaceVariant,
+          ),
+        ),
+        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text(
+          '${updated.month}/${updated.day} ${updated.hour.toString().padLeft(2, '0')}:${updated.minute.toString().padLeft(2, '0')}'
+          '${session.running ? ' · 运行中' : ''}',
+          style: TextStyle(
+            fontSize: 12,
+            color: session.running ? scheme.tertiary : scheme.onSurfaceVariant,
+          ),
+        ),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => ChatPage(sessionId: session.sessionId)),
+        ),
       onLongPress: () async {
         final action = await showModalBottomSheet<String>(
           context: context,
@@ -479,6 +504,7 @@ class _SessionTile extends ConsumerWidget {
           await archiveSession(ref, session.sessionId, archived: true);
         }
       },
+      ),
     );
   }
 }
