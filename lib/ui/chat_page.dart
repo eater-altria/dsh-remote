@@ -16,9 +16,15 @@ import 'package:url_launcher/url_launcher.dart';
 /// Chat surface for one session: history, streaming replies, tool cards,
 /// question / approval interactions, and the composer.
 class ChatPage extends ConsumerStatefulWidget {
-  const ChatPage({super.key, required this.sessionId});
+  const ChatPage({super.key, required this.sessionId, this.parentSessionId, this.subagentMode});
 
   final String sessionId;
+
+  /// 子代理路由：非空表示这是可续聊子代理，发送/停止走 subagent.* 方法。
+  final String? parentSessionId;
+  final String? subagentMode;
+
+  bool get isContinuableSubagent => parentSessionId != null && subagentMode == 'continuable';
 
   @override
   ConsumerState<ChatPage> createState() => _ChatPageState();
@@ -123,8 +129,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           if (chat.running)
             IconButton(
               icon: const Icon(Icons.stop_circle_outlined),
-              tooltip: '停止当前回合',
-              onPressed: () => notifier.cancel(),
+              tooltip: widget.isContinuableSubagent ? '打断子代理' : '停止当前回合',
+              onPressed: () => widget.isContinuableSubagent
+                  ? notifier.interruptSubagent(widget.parentSessionId!)
+                  : notifier.cancel(),
             ),
           IconButton(
             icon: const Icon(Icons.model_training),
@@ -150,6 +158,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           _PlanBanner(projections: chat.projections),
           _TodoBar(projections: chat.projections),
           Expanded(child: _buildList(chat, notifier)),
+          // 流式区独立于消息列表（kimi-remote 模式）：chunk 更新只重建这一块，
+          // 不再触碰上方整表。
+          if (chat.fold?.partial != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: _AssistantRow(item: chat.fold!.partial!),
+            ),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
             _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
             _buildComposer(chat, notifier),
@@ -317,7 +332,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                               'name': f.name,
                             },
                         ];
-                        await notifier.sendPrompt(text, images: payloads);
+                        if (widget.isContinuableSubagent) {
+                          await notifier.sendSubagentPrompt(widget.parentSessionId!, text);
+                        } else {
+                          await notifier.sendPrompt(text, images: payloads);
+                        }
                       } catch (e) {
                         if (mounted) {
                           ScaffoldMessenger.of(context)
@@ -514,7 +533,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => ChatPage(sessionId: entry.id)),
+                      MaterialPageRoute(
+                        builder: (_) => ChatPage(
+                          sessionId: entry.id,
+                          parentSessionId:
+                              entry.mode == 'continuable' ? widget.sessionId : null,
+                          subagentMode: entry.mode,
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -670,7 +696,8 @@ class _AssistantRow extends ConsumerWidget {
     switch (block) {
       case TextBlock(text: final text):
         if (text.trim().isEmpty) return const [];
-        return [MarkdownBody(data: text, selectable: true)];
+        // 流式中的 partial 不开启 selectable，降低每帧重建成本。
+        return [MarkdownBody(data: text, selectable: !item.streaming)];
       case ReasoningBlock(text: final text):
         if (text.trim().isEmpty) return const [];
         return [
@@ -816,13 +843,32 @@ class _CollapsibleState extends State<_Collapsible> {
   }
 }
 
-class _QueueStrip extends StatelessWidget {
+class _QueueStrip extends ConsumerWidget {
   const _QueueStrip({required this.queue});
 
   final List<QueueItem> queue;
 
+  void _removeQueueItem(BuildContext context, QueueItem item) {
+    // 从最近的 ProviderScope 读取 sessionId 与 notifier。
+    final container = ProviderScope.containerOf(context);
+    final sessionId = container.read(currentSessionIdProvider);
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListTile(
+          leading: const Icon(Icons.delete_outline),
+          title: const Text('从队列移除'),
+          onTap: () {
+            Navigator.pop(context);
+            container.read(chatProvider(sessionId).notifier).updateQueueItem(item.id, remove: true);
+          },
+        ),
+      ),
+    );
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Container(
       width: double.infinity,
@@ -833,13 +879,16 @@ class _QueueStrip extends StatelessWidget {
         runSpacing: 4,
         children: [
           for (final item in queue)
-            Chip(
-              avatar: Icon(
-                item.placement == 'steering' ? Icons.alt_route : Icons.schedule,
-                size: 14,
+            GestureDetector(
+              onLongPress: () => _removeQueueItem(context, item),
+              child: Chip(
+                avatar: Icon(
+                  item.placement == 'steering' ? Icons.alt_route : Icons.schedule,
+                  size: 14,
+                ),
+                label: Text(item.text, maxLines: 1, overflow: TextOverflow.ellipsis),
+                visualDensity: VisualDensity.compact,
               ),
-              label: Text(item.text, maxLines: 1, overflow: TextOverflow.ellipsis),
-              visualDensity: VisualDensity.compact,
             ),
         ],
       ),

@@ -122,7 +122,7 @@ void main() {
       },
     });
     expect(fold.items, isEmpty);
-    // live 模式才会折叠 chunk
+    // live 模式才会折叠 chunk（进入独立的 partial 流式区，不进 items）
     fold.applyEvent({
       'type': 'assistant/chunk',
       'seq': 2,
@@ -131,6 +131,8 @@ void main() {
         'chunk': {'type': 'text-delta', 'index': 0, 'text': '流式'}
       },
     }, live: true);
-    expect(fold.items, hasLength(1));
+    expect(fold.items, isEmpty);
+    expect(fold.partial, isNotNull);
+    expect((fold.partial!.blocks.first as TextBlock).text, '流式');
   });
 }

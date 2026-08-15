@@ -571,6 +571,57 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     await connection.api.rpc('session.cancel', {'sessionId': arg});
   }
 
+  /// 可续聊子代理：向其发消息（subagent.prompt）。
+  Future<void> sendSubagentPrompt(String parentSessionId, String text) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null || text.trim().isEmpty) return;
+    state = state.copyWith(sending: true);
+    try {
+      await connection.api.rpc('subagent.prompt', {
+        'parentSessionId': parentSessionId,
+        'childSessionId': arg,
+        'mode': 'continuable',
+        'content': [
+          {'type': 'text', 'text': text},
+        ],
+      });
+    } finally {
+      state = state.copyWith(sending: false);
+    }
+  }
+
+  /// 打断可续聊子代理（subagent.interrupt）。
+  Future<void> interruptSubagent(String parentSessionId) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    await connection.api.rpc('subagent.interrupt', {
+      'parentSessionId': parentSessionId,
+      'childSessionId': arg,
+      'mode': 'continuable',
+    });
+  }
+
+  /// 编辑/移除队列中的待发消息（session.updateQueue）。
+  Future<void> updateQueueItem(String itemId, {String? editText, bool remove = false, bool steer = false}) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    final action = remove
+        ? {'kind': 'remove'}
+        : steer
+            ? {'kind': 'steer'}
+            : {
+                'kind': 'edit',
+                'content': [
+                  {'type': 'text', 'text': editText ?? ''},
+                ],
+              };
+    await connection.api.rpc('session.updateQueue', {
+      'sessionId': arg,
+      'itemId': itemId,
+      'action': action,
+    });
+  }
+
   /// Answer the pending question prompt.
   Future<void> answerQuestion(List<Map<String, dynamic>> answers) async {
     final connection = ref.read(connectionProvider);

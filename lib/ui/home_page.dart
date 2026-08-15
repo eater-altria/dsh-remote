@@ -273,15 +273,91 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _WorkspaceHeader extends StatelessWidget {
+class _WorkspaceHeader extends ConsumerWidget {
   const _WorkspaceHeader({required this.workspace, required this.onNewSession});
 
   final WorkspaceView workspace;
   final VoidCallback onNewSession;
 
+  Future<void> _onLongPress(BuildContext context, WidgetRef ref) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('重命名 Workspace'),
+              onTap: () => Navigator.pop(context, 'rename'),
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error),
+              title: const Text('删除 Workspace 注册（保留目录与会话）'),
+              onTap: () => Navigator.pop(context, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null) return;
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    try {
+      if (action == 'rename') {
+        if (!context.mounted) return;
+        final controller = TextEditingController(text: workspace.title);
+        final title = await showDialog<String>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('重命名 Workspace'),
+            content: TextField(controller: controller, autofocus: true),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, controller.text.trim()),
+                  child: const Text('保存')),
+            ],
+          ),
+        );
+        if (title != null && title.isNotEmpty) {
+          await connection.api.rpc('workspace.rename', {
+            'workspaceId': workspace.workspaceId,
+            'title': title,
+          });
+        }
+      } else if (action == 'delete') {
+        if (!context.mounted) return;
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('删除 Workspace？'),
+            content: const Text('只移除注册信息；目录与会话日志都保留，会话变为未分组。'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+            ],
+          ),
+        );
+        if (confirmed == true) {
+          await connection.api.rpc('workspace.delete', {'workspaceId': workspace.workspaceId});
+        }
+      }
+      await ref.read(rosterProvider.notifier).refresh();
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('操作失败: $e')));
+      }
+    }
+  }
+
   @override
-  Widget build(BuildContext context) {
-    return Padding(
+  Widget build(BuildContext context, WidgetRef ref) {
+    return GestureDetector(
+      onLongPress: () => _onLongPress(context, ref),
+      child: Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 8, 4),
       child: Row(
         children: [
@@ -294,12 +370,13 @@ class _WorkspaceHeader extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.add, size: 18),
-            tooltip: '在此 Workspace 新建会话',
-            onPressed: onNewSession,
-          ),
-        ],
+            IconButton(
+              icon: const Icon(Icons.add, size: 18),
+              tooltip: '在此 Workspace 新建会话',
+              onPressed: onNewSession,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -152,7 +152,8 @@ class ChatFold {
   String? title;
 
   /// Partial streaming assistant blocks while chunks arrive.
-  AssistantItem? _partial;
+  /// 独立于 items 暴露：流式区单独渲染，chunk 更新不再触发整表重建。
+  AssistantItem? partial;
 
   /// Index of tool items by callId for result pairing.
   final Map<String, int> _toolIndex = {};
@@ -296,7 +297,7 @@ class ChatFold {
     if (rawChunk is! Map<String, dynamic>) return;
     final type = rawChunk['type'] as String? ?? '';
     final index = (rawChunk['index'] as num?)?.toInt() ?? 0;
-    final blocks = List<AssistantBlock>.from(_partial?.blocks ?? const <AssistantBlock>[]);
+    final blocks = List<AssistantBlock>.from(partial?.blocks ?? const <AssistantBlock>[]);
 
     switch (type) {
       case 'block-start':
@@ -345,22 +346,11 @@ class ChatFold {
         b is ToolCallBlock);
     if (!visible) return;
     final seq = (items.isNotEmpty ? items.last.seq : 0) + 1;
-    if (_partial == null) {
-      _partial = AssistantItem(seq: seq, blocks: blocks, streaming: true);
-      items.add(_partial!);
-    } else {
-      final idx = items.indexOf(_partial!);
-      _partial = AssistantItem(seq: _partial!.seq, blocks: blocks, streaming: true);
-      if (idx >= 0) items[idx] = _partial!;
-    }
+    partial = AssistantItem(seq: partial?.seq ?? seq, blocks: blocks, streaming: true);
   }
 
   void _finalizePartial() {
-    final partial = _partial;
-    if (partial == null) return;
-    _partial = null;
-    final idx = items.indexOf(partial);
-    if (idx >= 0) items.removeAt(idx);
+    partial = null;
   }
 }
 
