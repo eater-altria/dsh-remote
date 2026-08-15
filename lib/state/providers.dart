@@ -541,18 +541,40 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     await connection.api.rpc('goal.$verb', payload);
   }
 
-  /// Send a user prompt (queued behind an active turn), with optional images.
+  /// Send a user prompt, with optional images.
   ///
+  /// [mode]：`queue`（默认，排队等当前回合）或 `steer`（插入正在进行的回合）。
   /// [images] 是 `{bytes: Uint8List, mediaType: String, name: String}` 列表，
-  /// 按 promptContentPart 的 image 分支 base64 编码上送。
-  Future<void> sendPrompt(String text, {List<Map<String, Object>> images = const []}) async {
+  /// 按 promptContentPart 的 image 分支 base64 编码上送；超出 imageLimits
+  /// 投影限额时本地直接拒绝（免去一次失败的网络往返）。
+  Future<void> sendPrompt(String text,
+      {List<Map<String, Object>> images = const [], String mode = 'queue'}) async {
     final connection = ref.read(connectionProvider);
     if (connection == null || (text.trim().isEmpty && images.isEmpty)) return;
+    final limits = state.projections['imageLimits'];
+    if (limits is Map<String, dynamic> && images.isNotEmpty) {
+      final maxCount = (limits['maxImagesPerMessage'] as num?)?.toInt();
+      final maxBytes = (limits['maxImageBytes'] as num?)?.toInt();
+      final maxTotal = (limits['maxMessageImageBytes'] as num?)?.toInt();
+      if (maxCount != null && images.length > maxCount) {
+        throw RpcException('attachment-error', '一条消息最多 $maxCount 张图片', const {});
+      }
+      final total = images.fold<int>(0, (sum, i) => sum + (i['bytes'] as Uint8List).length);
+      for (final image in images) {
+        final size = (image['bytes'] as Uint8List).length;
+        if (maxBytes != null && size > maxBytes) {
+          throw RpcException('attachment-error', '单张图片超出大小限制', const {});
+        }
+      }
+      if (maxTotal != null && total > maxTotal) {
+        throw RpcException('attachment-error', '图片总大小超出限制', const {});
+      }
+    }
     state = state.copyWith(sending: true);
     try {
       await connection.api.rpc('session.prompt', {
         'sessionId': arg,
-        'mode': 'queue',
+        'mode': mode,
         'content': [
           if (text.trim().isNotEmpty) {'type': 'text', 'text': text},
           for (final image in images)

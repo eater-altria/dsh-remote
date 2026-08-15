@@ -315,7 +315,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 maxLines: 6,
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
-                  hintText: chat.running ? '发送将排队等待当前回合…' : '输入消息…',
+                  hintText: chat.running ? '发送将排队；长按 🐾 立即插队（steer）' : '输入消息…',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -323,41 +323,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               ),
             ),
             const SizedBox(width: 8),
-            IconButton.filled(
-              style: IconButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
-              onPressed: chat.sending
-                  ? null
-                  : () async {
-                      final text = _composer.text;
-                      if (text.trim().isEmpty && _pendingImages.isEmpty) return;
-                      _composer.clear();
-                      final images = _pendingImages.toList();
-                      setState(() => _pendingImages.clear());
-                      try {
-                        final payloads = [
-                          for (final f in images)
-                            <String, Object>{
-                              'bytes': await f.readAsBytes(),
-                              'mediaType': _mediaTypeOf(f),
-                              'name': f.name,
-                            },
-                        ];
-                        if (widget.isContinuableSubagent) {
-                          await notifier.sendSubagentPrompt(widget.parentSessionId!, text);
-                        } else {
-                          await notifier.sendPrompt(text, images: payloads);
-                        }
-                      } catch (e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context)
-                              .showSnackBar(SnackBar(content: Text('发送失败: $e')));
-                          _composer.text = text;
-                        }
-                      }
-                    },
-              icon: chat.sending
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const PawIcon(size: 20),
+            GestureDetector(
+              // 运行中长按 = steering：立即插入当前回合，而不是排队
+              onLongPress: chat.running && !chat.sending && !widget.isContinuableSubagent
+                  ? () => _send(notifier, mode: 'steer')
+                  : null,
+              child: IconButton.filled(
+                style: IconButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
+                onPressed: chat.sending ? null : () => _send(notifier),
+                icon: chat.sending
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const PawIcon(size: 20),
+              ),
             ),
               ],
             ),
@@ -365,6 +342,34 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _send(ChatNotifier notifier, {String mode = 'queue'}) async {
+    final text = _composer.text;
+    if (text.trim().isEmpty && _pendingImages.isEmpty) return;
+    _composer.clear();
+    final images = _pendingImages.toList();
+    setState(() => _pendingImages.clear());
+    try {
+      final payloads = [
+        for (final f in images)
+          <String, Object>{
+            'bytes': await f.readAsBytes(),
+            'mediaType': _mediaTypeOf(f),
+            'name': f.name,
+          },
+      ];
+      if (widget.isContinuableSubagent) {
+        await notifier.sendSubagentPrompt(widget.parentSessionId!, text);
+      } else {
+        await notifier.sendPrompt(text, images: payloads, mode: mode);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败: $e')));
+        _composer.text = text;
+      }
+    }
   }
 
   Future<void> _showModelSheet() async {
