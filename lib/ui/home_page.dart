@@ -546,7 +546,7 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
         FilledButton(
           onPressed: () {
-            final data = listing.value;
+            final data = listing.valueOrNull;
             Navigator.pop(context, data?.path);
           },
           child: const Text('选择此目录'),

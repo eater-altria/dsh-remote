@@ -9,6 +9,20 @@ import 'ui/theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // release 下构建期异常默认渲染为空白——换成可见错误卡片 + 日志，便于诊断。
+  ErrorWidget.builder = (details) {
+    debugPrint('[error] \${details.exceptionAsString()}\n\${details.stack}');
+    return Material(
+      color: const Color(0xFFF9E3E3),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          '渲染出错：\${details.exceptionAsString()}',
+          style: const TextStyle(color: Color(0xFF6B2B2B), fontSize: 12),
+        ),
+      ),
+    );
+  };
   final container = ProviderContainer();
   await container.read(notificationServiceProvider).init();
   runApp(UncontrolledProviderScope(container: container, child: const DshRemoteApp()));

@@ -175,7 +175,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ),
           if (chat.jobs.isNotEmpty) _JobsStrip(jobs: chat.jobs),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
-            _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
+            _SkillSuggestions(
+                sessionId: widget.parentSessionId ?? widget.sessionId, controller: _composer),
             _buildComposer(chat, notifier),
           ],
         ),
@@ -661,7 +662,7 @@ class _AssistantRow extends ConsumerWidget {
     final messageId = item.messageId;
     final rating = messageId == null
         ? null
-        : ref.watch(messageFeedbackProvider(sessionId)).value?[messageId];
+        : ref.watch(messageFeedbackProvider(sessionId)).valueOrNull?[messageId];
     final bubble = Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1049,13 +1050,16 @@ class _OptionTile extends StatelessWidget {
 class _SkillSuggestions extends ConsumerWidget {
   const _SkillSuggestions({required this.sessionId, required this.controller});
 
+  /// 传「代理会话」id：子代理页应传父会话（子代理 id 会被 skill.list /
+  /// commands.list 的 resolver 拒绝）。
   final String sessionId;
   final TextEditingController controller;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final skills = ref.watch(skillListProvider(sessionId)).value ?? const <SkillEntry>[];
-    final commands = ref.watch(commandListProvider(sessionId)).value ?? const <CommandEntry>[];
+    // valueOrNull：AsyncError.value 会重新抛错，直接把整棵 Column 炸掉。
+    final skills = ref.watch(skillListProvider(sessionId)).valueOrNull ?? const <SkillEntry>[];
+    final commands = ref.watch(commandListProvider(sessionId)).valueOrNull ?? const <CommandEntry>[];
     return ValueListenableBuilder<TextEditingValue>(
       valueListenable: controller,
       builder: (context, value, _) {
