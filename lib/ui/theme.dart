@@ -5,7 +5,7 @@
 ///
 /// - 色板：牛奶蓝 primary + 樱花粉 secondary + 薄荷绿（状态），冷白底、墨青文字
 /// - 形状：统一 16~20 圆角，聊天气泡带「猫耳」小角
-/// - 签名元素：猫娘 mascot（CustomPainter 手绘）+ 猫耳气泡 + 爪印发送钮
+/// - 签名元素：猫娘主视觉 + 空状态线稿 mascot + 猫耳气泡 + 爪印发送钮
 library;
 
 import 'dart:math' as math;
@@ -146,7 +146,9 @@ class NekoTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: scheme.surface,
-        hintStyle: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.75)),
+        hintStyle: TextStyle(
+          color: scheme.onSurfaceVariant.withValues(alpha: 0.75),
+        ),
         labelStyle: TextStyle(color: scheme.onSurfaceVariant),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(24),
@@ -160,11 +162,16 @@ class NekoTheme {
           borderRadius: BorderRadius.circular(24),
           borderSide: BorderSide(color: scheme.primary, width: 1.6),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 14,
+        ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
           textStyle: textTheme.labelLarge,
         ),
@@ -214,10 +221,22 @@ class NekoTheme {
         letterSpacing: 0.4,
         color: scheme.onSurfaceVariant,
       ),
-      bodyLarge: TextStyle(fontSize: 15.5, height: 1.55, color: scheme.onSurface),
+      bodyLarge: TextStyle(
+        fontSize: 15.5,
+        height: 1.55,
+        color: scheme.onSurface,
+      ),
       bodyMedium: TextStyle(fontSize: 14, height: 1.5, color: scheme.onSurface),
-      bodySmall: TextStyle(fontSize: 12, height: 1.45, color: scheme.onSurfaceVariant),
-      labelLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: 0.3),
+      bodySmall: TextStyle(
+        fontSize: 12,
+        height: 1.45,
+        color: scheme.onSurfaceVariant,
+      ),
+      labelLarge: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0.3,
+      ),
     );
     return base;
   }
@@ -226,7 +245,11 @@ class NekoTheme {
 /// 签名元素①：猫耳气泡形状（用户消息用）。
 /// 在圆角矩形的右上/左上顶出一只小三角耳，俏皮但不吵。
 class CatEarBubbleShape extends RoundedRectangleBorder {
-  const CatEarBubbleShape({this.earOnLeft = false, super.borderRadius, super.side});
+  const CatEarBubbleShape({
+    this.earOnLeft = false,
+    super.borderRadius,
+    super.side,
+  });
 
   final bool earOnLeft;
 
@@ -255,8 +278,36 @@ class CatEarBubbleShape extends RoundedRectangleBorder {
   }
 }
 
-/// 签名元素②：手绘猫娘 mascot（线稿风猫脸 + 耳 + 胡须）。
-/// 用在设置页 hero 与空状态，是这套 UI 的记忆点。
+/// 连接页主视觉：与启动图、应用图标共享同一位猫娘角色。
+///
+/// [Align] 隔离父级的横向拉伸约束，确保图片始终保持正方形比例。
+class NekoHero extends StatelessWidget {
+  const NekoHero({super.key, this.size = 156});
+
+  static const assetName = 'assets/splash/neko_companion_1024.png';
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.center,
+      child: SizedBox.square(
+        dimension: size,
+        child: ClipOval(
+          child: Image.asset(
+            assetName,
+            fit: BoxFit.cover,
+            semanticLabel: 'DSH Remote 猫娘助手',
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 空状态签名元素：手绘猫娘 mascot（线稿风猫脸 + 耳 + 胡须）。
+/// 仅用于空列表与空会话，避免在常规页面重复装饰。
 class NekoMascot extends StatelessWidget {
   const NekoMascot({super.key, this.size = 96, this.color, this.blush = true});
 
@@ -299,10 +350,18 @@ class _NekoMascotPainter extends CustomPainter {
     final earPath = Path()
       ..moveTo(center.dx - r * 0.95, center.dy - r * 0.55)
       ..quadraticBezierTo(
-          center.dx - r * 0.95, center.dy - r * 1.25, center.dx - r * 0.35, center.dy - r * 0.95)
+        center.dx - r * 0.95,
+        center.dy - r * 1.25,
+        center.dx - r * 0.35,
+        center.dy - r * 0.95,
+      )
       ..moveTo(center.dx + r * 0.95, center.dy - r * 0.55)
       ..quadraticBezierTo(
-          center.dx + r * 0.95, center.dy - r * 1.25, center.dx + r * 0.35, center.dy - r * 0.95);
+        center.dx + r * 0.95,
+        center.dy - r * 1.25,
+        center.dx + r * 0.35,
+        center.dy - r * 0.95,
+      );
     canvas.drawPath(earPath, stroke);
 
     // 圆脸（留出耳位，用弧线）
@@ -325,7 +384,11 @@ class _NekoMascotPainter extends CustomPainter {
     final eyeY = center.dy - r * 0.05;
     for (final dx in [-r * 0.42, r * 0.42]) {
       canvas.drawArc(
-        Rect.fromCenter(center: Offset(center.dx + dx, eyeY), width: r * 0.42, height: r * 0.3),
+        Rect.fromCenter(
+          center: Offset(center.dx + dx, eyeY),
+          width: r * 0.42,
+          height: r * 0.3,
+        ),
         math.pi * 1.08,
         math.pi * 0.84,
         false,
@@ -337,8 +400,18 @@ class _NekoMascotPainter extends CustomPainter {
     final mouthY = center.dy + r * 0.32;
     final mouth = Path()
       ..moveTo(center.dx - r * 0.16, mouthY)
-      ..quadraticBezierTo(center.dx - r * 0.08, mouthY + r * 0.12, center.dx, mouthY)
-      ..quadraticBezierTo(center.dx + r * 0.08, mouthY + r * 0.12, center.dx + r * 0.16, mouthY);
+      ..quadraticBezierTo(
+        center.dx - r * 0.08,
+        mouthY + r * 0.12,
+        center.dx,
+        mouthY,
+      )
+      ..quadraticBezierTo(
+        center.dx + r * 0.08,
+        mouthY + r * 0.12,
+        center.dx + r * 0.16,
+        mouthY,
+      );
     canvas.drawPath(mouth, stroke);
 
     // 胡须
@@ -364,7 +437,10 @@ class _NekoMascotPainter extends CustomPainter {
       for (final dx in [-r * 0.55, r * 0.55]) {
         canvas.drawOval(
           Rect.fromCenter(
-              center: Offset(center.dx + dx, center.dy + r * 0.28), width: r * 0.34, height: r * 0.16),
+            center: Offset(center.dx + dx, center.dy + r * 0.28),
+            width: r * 0.34,
+            height: r * 0.16,
+          ),
           blushPaint,
         );
       }
@@ -387,7 +463,9 @@ class PawIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     return CustomPaint(
       size: Size.square(size),
-      painter: _PawPainter(color: color ?? Theme.of(context).colorScheme.onPrimary),
+      painter: _PawPainter(
+        color: color ?? Theme.of(context).colorScheme.onPrimary,
+      ),
     );
   }
 }
@@ -403,7 +481,11 @@ class _PawPainter extends CustomPainter {
     final paint = Paint()..color = color;
     // 主肉垫
     canvas.drawOval(
-      Rect.fromCenter(center: Offset(w * 0.5, w * 0.62), width: w * 0.52, height: w * 0.44),
+      Rect.fromCenter(
+        center: Offset(w * 0.5, w * 0.62),
+        width: w * 0.52,
+        height: w * 0.44,
+      ),
       paint,
     );
     // 四颗小趾垫

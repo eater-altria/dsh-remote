@@ -62,9 +62,13 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const NekoMascot(size: 104),
+                  const NekoHero(size: 156),
                   const SizedBox(height: 16),
-                  Text('DSH Remote', style: theme.textTheme.displaySmall, textAlign: TextAlign.center),
+                  Text(
+                    'DSH Remote',
+                    style: theme.textTheme.displaySmall,
+                    textAlign: TextAlign.center,
+                  ),
                   const SizedBox(height: 8),
                   Text(
                     '连接到你的 DeepSeek Harness 主机',
@@ -98,7 +102,11 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                   FilledButton.icon(
                     onPressed: _testing ? null : _connect,
                     icon: _testing
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const PawIcon(size: 18),
                     label: Text(_testing ? '连接中…' : '连接'),
                   ),
@@ -111,22 +119,30 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('连接失败',
-                                style: TextStyle(
-                                    color: theme.colorScheme.onErrorContainer,
-                                    fontWeight: FontWeight.w700)),
+                            Text(
+                              '连接失败',
+                              style: TextStyle(
+                                color: theme.colorScheme.onErrorContainer,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
                             const SizedBox(height: 4),
                             Text(
                               _error!,
-                              style: TextStyle(color: theme.colorScheme.onErrorContainer, fontSize: 12),
+                              style: TextStyle(
+                                color: theme.colorScheme.onErrorContainer,
+                                fontSize: 12,
+                              ),
                             ),
                             const SizedBox(height: 6),
                             Text(
                               '确认 relay 已在主机上运行（launchd 服务或 node relay/dsh-relay.mjs），'
                               '且手机与主机在同一 Wi-Fi。',
                               style: TextStyle(
-                                  color: theme.colorScheme.onErrorContainer.withValues(alpha: 0.75),
-                                  fontSize: 11),
+                                color: theme.colorScheme.onErrorContainer
+                                    .withValues(alpha: 0.75),
+                                fontSize: 11,
+                              ),
                             ),
                           ],
                         ),
@@ -137,7 +153,9 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                   Text(
                     '提示：在主机上运行 `node relay/dsh-relay.mjs` 启动局域网中继，'
                     '手机与主机连同一 Wi-Fi 后填写中继地址（默认端口 3081）。',
-                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -154,12 +172,12 @@ class _SetupPageState extends ConsumerState<SetupPage> {
 /// candidate base URL before the profile is persisted.
 final connectionProbeProvider =
     Provider<Future<void> Function(String, {String? token})>((ref) {
-  return (String baseUrl, {String? token}) async {
-    final api = DshApi(baseUrl, token: token);
-    try {
-      await api.rpc('host.describe');
-    } finally {
-      api.dispose();
-    }
-  };
-});
+      return (String baseUrl, {String? token}) async {
+        final api = DshApi(baseUrl, token: token);
+        try {
+          await api.rpc('host.describe');
+        } finally {
+          api.dispose();
+        }
+      };
+    });

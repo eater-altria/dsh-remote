@@ -1,8 +1,35 @@
 import 'package:dsh_remote/api/fold.dart';
 import 'package:dsh_remote/api/wire.dart';
+import 'package:dsh_remote/ui/setup_page.dart';
+import 'package:dsh_remote/ui/theme.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets(
+    'setup page shows the generated catgirl hero at a fixed square size',
+    (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(theme: NekoTheme.light(), home: const SetupPage()),
+        ),
+      );
+
+      expect(find.byType(NekoHero), findsOneWidget);
+      expect(find.byType(NekoMascot), findsNothing);
+
+      final imageFinder = find.descendant(
+        of: find.byType(NekoHero),
+        matching: find.byType(Image),
+      );
+      expect(imageFinder, findsOneWidget);
+      expect(tester.getSize(imageFinder), const Size.square(156));
+      final image = tester.widget<Image>(imageFinder);
+      expect((image.image as AssetImage).assetName, NekoHero.assetName);
+    },
+  );
+
   test('wire envelope round-trips a success response', () {
     final rpcId = mintRpcId();
     final request = clientRequest(rpcId, 'host.describe', const {});
@@ -21,7 +48,9 @@ void main() {
         '{"type":"server-response","rpcId":"$rpcId","result":{"ok":false,"error":{"code":"session-not-found","message":"gone","details":{"sessionId":"s1"}}}}';
     expect(
       () => decodeServerResponse(body, rpcId),
-      throwsA(isA<RpcException>().having((e) => e.code, 'code', 'session-not-found')),
+      throwsA(
+        isA<RpcException>().having((e) => e.code, 'code', 'session-not-found'),
+      ),
     );
   });
 
@@ -34,9 +63,9 @@ void main() {
       'data': {
         'message': {
           'content': [
-            {'type': 'text', 'text': '你好'}
-          ]
-        }
+            {'type': 'text', 'text': '你好'},
+          ],
+        },
       },
     });
     fold.applyEvent({
@@ -44,7 +73,7 @@ void main() {
       'seq': 1,
       'time': 0,
       'data': {
-        'chunk': {'type': 'block-start', 'index': 0, 'blockType': 'text'}
+        'chunk': {'type': 'block-start', 'index': 0, 'blockType': 'text'},
       },
     });
     fold.applyEvent({
@@ -52,7 +81,7 @@ void main() {
       'seq': 2,
       'time': 0,
       'data': {
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': '你好呀'}
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '你好呀'},
       },
     });
     fold.applyEvent({
@@ -62,9 +91,9 @@ void main() {
       'data': {
         'message': {
           'content': [
-            {'type': 'text', 'text': '你好呀'}
-          ]
-        }
+            {'type': 'text', 'text': '你好呀'},
+          ],
+        },
       },
     });
     expect(fold.items, hasLength(2));
@@ -76,15 +105,22 @@ void main() {
 
   test('fold pairs tool results with calls (real wire shapes)', () {
     final fold = ChatFold();
-    fold.applyEvent({
-      'type': 'tool/call',
-      'seq': 1,
-      'time': 0,
-      'data': {'callId': 'tool_1', 'name': 'bash', 'arguments': '{"command":"ls"}'},
-    }, view: {
-      'for': 'call',
-      'view': {'card': 'terminal', 'title': 'ls'},
-    });
+    fold.applyEvent(
+      {
+        'type': 'tool/call',
+        'seq': 1,
+        'time': 0,
+        'data': {
+          'callId': 'tool_1',
+          'name': 'bash',
+          'arguments': '{"command":"ls"}',
+        },
+      },
+      view: {
+        'for': 'call',
+        'view': {'card': 'terminal', 'title': 'ls'},
+      },
+    );
     fold.applyEvent({
       'type': 'tool/result',
       'seq': 2,
@@ -97,11 +133,11 @@ void main() {
               'type': 'tool-result',
               'toolCallId': 'tool_1',
               'content': [
-                {'type': 'text', 'text': 'ok'}
-              ]
-            }
-          ]
-        }
+                {'type': 'text', 'text': 'ok'},
+              ],
+            },
+          ],
+        },
       },
     });
     expect(fold.items, hasLength(1));
@@ -118,7 +154,7 @@ void main() {
       'seq': 1,
       'time': 0,
       'data': {
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': '不应出现'}
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '不应出现'},
       },
     });
     expect(fold.items, isEmpty);
@@ -128,7 +164,7 @@ void main() {
       'seq': 2,
       'time': 0,
       'data': {
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': '流式'}
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '流式'},
       },
     }, live: true);
     expect(fold.items, isEmpty);
@@ -149,8 +185,8 @@ void main() {
         'id': 'u1',
         'source': {'kind': 'user', 'rpcId': 'r1'},
         'content': [
-          {'type': 'text', 'text': '主人说的话'}
-        ]
+          {'type': 'text', 'text': '主人说的话'},
+        ],
       },
     });
     // 子代理通报
@@ -162,8 +198,8 @@ void main() {
         'id': 's1',
         'source': {'kind': 'subagent-report'},
         'content': [
-          {'type': 'text', 'text': 'Background subagent xxx reported: ...'}
-        ]
+          {'type': 'text', 'text': 'Background subagent xxx reported: ...'},
+        ],
       },
     });
     expect(fold.items[0], isA<UserItem>());
@@ -180,7 +216,7 @@ void foldRobustnessTests() {
       'seq': 1,
       'time': 0,
       'data': {
-        'chunk': {'type': 'text-delta', 'index': 1000000000, 'text': 'boom'}
+        'chunk': {'type': 'text-delta', 'index': 1000000000, 'text': 'boom'},
       },
     }, live: true);
     expect(fold.partial, isNull);
@@ -193,7 +229,7 @@ void foldRobustnessTests() {
       'seq': 1,
       'time': 0,
       'data': {
-        'chunk': {'type': 'block-start', 'index': 0, 'blockType': 'alien-tech'}
+        'chunk': {'type': 'block-start', 'index': 0, 'blockType': 'alien-tech'},
       },
     }, live: true);
     expect(fold.partial, isNull);
@@ -206,7 +242,7 @@ void foldRobustnessTests() {
       'seq': 1,
       'time': 0,
       'data': {
-        'chunk': {'type': 'text-delta', 'index': 0, 'text': '说了一半'}
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '说了一半'},
       },
     }, live: true);
     fold.applyEvent({'type': 'turn/end', 'seq': 2, 'time': 0, 'data': {}});
@@ -226,9 +262,9 @@ void foldRobustnessTests() {
         'message': {
           'id': 'm1',
           'content': [
-            {'type': 'text', 'text': '你好'}
-          ]
-        }
+            {'type': 'text', 'text': '你好'},
+          ],
+        },
       },
     };
     fold.applyEvent(msg);

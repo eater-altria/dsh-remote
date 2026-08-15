@@ -30,6 +30,21 @@ launchctl load ~/Library/LaunchAgents/ai.deepseek.dsh-remote-relay.plist
 # 开机自启 + 崩溃自愈，日志 /tmp/dsh-relay.log
 ```
 
+### 目录浏览（手机端可视化选择 Workspace 路径）
+
+host 默认的目录选择器在「loopback + 本地显示器」下解析为 macOS 原生弹窗（手机用不了）。
+在 `~/.dsh/profiles/web/cordis.patch.yml` 里钉死为 browse 后端（本仓库主机的配置已如此）：
+
+```yaml
+- id: directory-picker
+  disabled: true
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+```
+
+补丁层支持热重载，保存即生效。之后 App 的「新建 Workspace」会弹出可逐级导航的目录浏览器。
+
 ### 访问令牌（推荐在不可信网络启用）
 
 ```bash
