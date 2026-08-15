@@ -135,4 +135,81 @@ void main() {
     expect(fold.partial, isNotNull);
     expect((fold.partial!.blocks.first as TextBlock).text, '流式');
   });
+
+  foldRobustnessTests();
+}
+
+void foldRobustnessTests() {
+  test('chunk index 超上限被忽略（防 OOM）', () {
+    final fold = ChatFold();
+    fold.applyEvent({
+      'type': 'assistant/chunk',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'chunk': {'type': 'text-delta', 'index': 1000000000, 'text': 'boom'}
+      },
+    }, live: true);
+    expect(fold.partial, isNull);
+  });
+
+  test('未知 blockType 不产生可见气泡', () {
+    final fold = ChatFold();
+    fold.applyEvent({
+      'type': 'assistant/chunk',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'chunk': {'type': 'block-start', 'index': 0, 'blockType': 'alien-tech'}
+      },
+    }, live: true);
+    expect(fold.partial, isNull);
+  });
+
+  test('turn/end 无收尾消息时 partial 落表为中断项', () {
+    final fold = ChatFold();
+    fold.applyEvent({
+      'type': 'assistant/chunk',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '说了一半'}
+      },
+    }, live: true);
+    fold.applyEvent({'type': 'turn/end', 'seq': 2, 'time': 0, 'data': {}});
+    expect(fold.partial, isNull);
+    expect(fold.items, hasLength(1));
+    final item = fold.items.first as AssistantItem;
+    expect((item.blocks.last as TextBlock).text, contains('中断'));
+  });
+
+  test('重复消息按 id 去重，tool/call 重放不产生第二张卡', () {
+    final fold = ChatFold();
+    final msg = {
+      'type': 'assistant/message',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'message': {
+          'id': 'm1',
+          'content': [
+            {'type': 'text', 'text': '你好'}
+          ]
+        }
+      },
+    };
+    fold.applyEvent(msg);
+    fold.applyEvent(msg); // 重放
+    expect(fold.items, hasLength(1));
+
+    final call = {
+      'type': 'tool/call',
+      'seq': 2,
+      'time': 0,
+      'data': {'callId': 'c1', 'name': 'bash', 'arguments': '{}'},
+    };
+    fold.applyEvent(call);
+    fold.applyEvent(call); // 重放
+    expect(fold.items.whereType<ToolItem>(), hasLength(1));
+  });
 }

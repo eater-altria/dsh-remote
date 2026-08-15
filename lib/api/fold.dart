@@ -76,8 +76,11 @@ AssistantBlock emptyBlock(String blockType) {
       return const TextBlock('');
     case 'reasoning':
       return const ReasoningBlock('');
-    default:
+    case 'tool-call':
       return const ToolCallBlock(callId: '', name: '', argsRaw: '');
+    default:
+      // 未知类型保持 OtherBlock：不会被误判成可见的空工具气泡（健壮性 #3）。
+      return OtherBlock(blockType);
   }
 }
 
@@ -155,6 +158,12 @@ class ChatFold {
   /// 独立于 items 暴露：流式区单独渲染，chunk 更新不再触发整表重建。
   AssistantItem? partial;
 
+  /// 已渲染消息的 id 集合（按 message.id 去重，历史页与 live 帧重叠不重复落表）。
+  final Set<String> _seenMessageIds = {};
+
+  /// partial 的 seq 独立递增，避免与 items 追加撞号（健壮性 #2）。
+  int _partialSeq = 1000000000;
+
   /// Index of tool items by callId for result pairing.
   final Map<String, int> _toolIndex = {};
 
@@ -199,6 +208,9 @@ class ChatFold {
         }
         final text = texts.join('\n').trim();
         if (text.isEmpty && images.isEmpty) return;
+        // 按 message.id 去重：历史页与 live 帧重叠时不重复落表（健壮性 #4）。
+        final msgId = map['id'] as String?;
+        if (msgId != null && !_seenMessageIds.add(msgId)) return;
         items.add(UserItem(seq: seq, text: text, images: images));
       case 'assistant/chunk':
         if (!live) return; // 历史折叠跳过流式中间态（性能关键路径）
@@ -216,8 +228,10 @@ class ChatFold {
             .where((b) => b is! OtherBlock && b is! ToolCallBlock)
             .toList();
         _finalizePartial();
+        final msgId = message['id'] as String?;
+        if (msgId != null && !_seenMessageIds.add(msgId)) return;
         if (blocks.isNotEmpty) {
-          items.add(AssistantItem(seq: seq, blocks: blocks, messageId: message['id'] as String?));
+          items.add(AssistantItem(seq: seq, blocks: blocks, messageId: msgId));
         }
       case 'tool/call':
         final callId = '${map['callId'] ?? map['id'] ?? ''}';
@@ -227,12 +241,23 @@ class ChatFold {
         final viewBody = view?['view'];
         final title = viewBody is Map<String, dynamic> ? viewBody['title'] as String? : null;
         _finalizePartial();
+        final argsText = args is String ? args : (args == null ? '' : '$args');
+        final existing = _toolIndex[callId];
+        if (existing != null && existing >= 0 && existing < items.length) {
+          // 重放/乱序：原地更新而不是追加第二张卡（健壮性 #4）。
+          final old = items[existing];
+          if (old is ToolItem && !old.finished) {
+            items[existing] =
+                ToolItem(seq: old.seq, callId: callId, name: title ?? name, argsRaw: argsText);
+          }
+          return;
+        }
         _toolIndex[callId] = items.length;
         items.add(ToolItem(
           seq: seq,
           callId: callId,
           name: title ?? name,
-          argsRaw: args is String ? args : (args == null ? '' : '$args'),
+          argsRaw: argsText,
         ));
       case 'tool/result':
         // 真实结构：data.message.content = [{type:'tool-result', toolCallId, content:[...]}]
@@ -278,7 +303,7 @@ class ChatFold {
         running = true;
       case 'turn/end':
         running = false;
-        _finalizePartial();
+        _dropPartialAsInterrupted(seq);
       case 'session/title':
         final t = map['title'];
         if (t is String && t.isNotEmpty) title = t;
@@ -310,6 +335,8 @@ class ChatFold {
     if (rawChunk is! Map<String, dynamic>) return;
     final type = rawChunk['type'] as String? ?? '';
     final index = (rawChunk['index'] as num?)?.toInt() ?? 0;
+    // 网络来源的 index 无信任基础：无上限填充会把内存打爆（健壮性 #1）。
+    if (index < 0 || index > 256) return;
     final blocks = List<AssistantBlock>.from(partial?.blocks ?? const <AssistantBlock>[]);
 
     switch (type) {
@@ -356,14 +383,28 @@ class ChatFold {
     final visible = blocks.any((b) =>
         (b is TextBlock && b.text.trim().isNotEmpty) ||
         (b is ReasoningBlock && b.text.trim().isNotEmpty) ||
-        b is ToolCallBlock);
+        // 空壳 tool-call（id/name/args 全空）不算可见内容。
+        (b is ToolCallBlock && (b.name.isNotEmpty || b.argsRaw.isNotEmpty)) ||
+        b is ImageBlock);
     if (!visible) return;
-    final seq = (items.isNotEmpty ? items.last.seq : 0) + 1;
-    partial = AssistantItem(seq: partial?.seq ?? seq, blocks: blocks, streaming: true);
+    partial = AssistantItem(seq: partial?.seq ?? _partialSeq++, blocks: blocks, streaming: true);
   }
 
   void _finalizePartial() {
     partial = null;
+  }
+
+  /// 流中断（turn/end 无 assistant/message 收尾）：partial 落表保留已生成内容，
+  /// 末尾附中断标记，而不是静默丢弃（健壮性 #2）。
+  void _dropPartialAsInterrupted(int seq) {
+    final p = partial;
+    if (p == null) return;
+    partial = null;
+    items.add(AssistantItem(
+      seq: p.seq,
+      blocks: [...p.blocks, const TextBlock('\n\n*（回合中断，内容未完整）*')],
+      messageId: p.messageId,
+    ));
   }
 }
 
