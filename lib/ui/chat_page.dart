@@ -6,6 +6,7 @@ import '../api/fold.dart';
 import '../api/models.dart';
 import '../state/providers.dart';
 import 'theme.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Chat surface for one session: history, streaming replies, tool cards,
 /// question / approval interactions, and the composer.
@@ -124,8 +125,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           PopupMenuButton<String>(
             onSelected: _onSessionMenu,
             itemBuilder: (context) => const [
+              PopupMenuItem(value: 'subagents', child: Text('子代理')),
               PopupMenuItem(value: 'rename', child: Text('重命名')),
               PopupMenuItem(value: 'fork', child: Text('分叉会话')),
+              PopupMenuItem(value: 'export', child: Text('导出会话日志')),
               PopupMenuItem(value: 'archive', child: Text('归档')),
             ],
           ),
@@ -298,6 +301,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<void> _onSessionMenu(String value) async {
     switch (value) {
+      case 'subagents':
+        await _showSubagentsSheet();
+      case 'export':
+        final connection = ref.read(connectionProvider);
+        if (connection == null) return;
+        final uri = Uri.parse(
+            '${connection.baseUrl}/api/session.export?sessionId=${widget.sessionId}&includeDescendants=true');
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('无法打开导出链接')));
+          }
+        }
       case 'rename':
         final controller = TextEditingController(text: ref.read(chatProvider(widget.sessionId)).title);
         final title = await showDialog<String>(
@@ -330,6 +345,58 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         await archiveSession(ref, widget.sessionId, archived: true);
         if (mounted) Navigator.of(context).pop();
     }
+  }
+
+  Future<void> _showSubagentsSheet() async {
+    final entries = await ref.read(subagentListProvider(widget.sessionId).future);
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        if (entries.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: Text('这个会话还没有子代理')),
+          );
+        }
+        return ListView(
+          shrinkWrap: true,
+          children: [
+            for (final entry in entries)
+              if (entry.diagnosticReason != null)
+                ListTile(
+                  dense: true,
+                  leading: Icon(Icons.warning_amber, size: 18, color: theme.colorScheme.error),
+                  title: Text('诊断：${entry.diagnosticReason}'),
+                  subtitle: Text(entry.id, maxLines: 1, overflow: TextOverflow.ellipsis),
+                )
+              else
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                    entry.activity == 'running' ? Icons.play_circle_outline : Icons.smart_toy_outlined,
+                    size: 18,
+                    color: entry.activity == 'running' ? theme.colorScheme.tertiary : null,
+                  ),
+                  title: Text(entry.label ?? entry.id, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(
+                    '${entry.mode == 'continuable' ? '可续聊' : '一次性'}'
+                    '${entry.hasChildren ? ' · 有子级' : ''}',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => ChatPage(sessionId: entry.id)),
+                    );
+                  },
+                ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _showQuestionSheet(PendingQuestion pending) async {

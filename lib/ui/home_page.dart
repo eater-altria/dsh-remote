@@ -5,6 +5,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import '../state/providers.dart';
 import 'chat_page.dart';
+import 'settings_page.dart';
 import 'theme.dart';
 
 /// Session roster: workspaces with their sessions, plus ungrouped sessions.
@@ -45,10 +46,15 @@ class HomePage extends ConsumerWidget {
                 await ref.read(connectionProvider.notifier).disconnect();
               } else if (value == 'new_workspace') {
                 await _createWorkspace(context, ref);
+              } else if (value == 'settings') {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SettingsPage()),
+                );
               }
             },
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'new_workspace', child: Text('新建 Workspace')),
+              PopupMenuItem(value: 'settings', child: Text('设置')),
               PopupMenuItem(value: 'disconnect', child: Text('断开连接')),
             ],
           ),

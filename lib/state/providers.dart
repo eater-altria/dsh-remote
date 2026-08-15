@@ -266,6 +266,11 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
   final List<Map<String, dynamic>> _pendingChunks = [];
   Timer? _chunkFlushTimer;
 
+  /// mux 流的 lastSeq 跟踪：session/subscribed 建立基线，session/event 逐个校验，
+  /// 出现缺口（seq 跳跃）说明重连期间丢了帧 → 补拉历史尾部页对齐。
+  int _lastSeq = -1;
+  bool _resyncing = false;
+
   void _flushChunks() {
     _chunkFlushTimer?.cancel();
     _chunkFlushTimer = null;
@@ -385,9 +390,31 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     final fold = state.fold ?? ChatFold();
 
     switch (type) {
+      case 'session/subscribed':
+        final lastSeq = (payload['lastSeq'] as num?)?.toInt();
+        if (lastSeq != null) _lastSeq = lastSeq;
+        // 重连后的新基线：直接与本地状态对齐一次。
+        if (lastSeq != null && state.fold != null && !_resyncing) {
+          _resyncing = true;
+          unawaited(_loadHistory().whenComplete(() => _resyncing = false));
+        }
       case 'session/event':
         final event = payload['event'];
         if (event is! Map<String, dynamic>) return;
+        final seq = (event['seq'] as num?)?.toInt();
+        if (seq != null) {
+          if (_lastSeq >= 0 && seq > _lastSeq + 1 && !_resyncing) {
+            // 缺口：丢帧了，补拉历史对齐后再继续。
+            _resyncing = true;
+            _pendingChunks.clear();
+            unawaited(_loadHistory().whenComplete(() {
+              _resyncing = false;
+              _lastSeq = seq;
+            }));
+            return;
+          }
+          if (seq > _lastSeq) _lastSeq = seq;
+        }
         if (event['type'] == 'assistant/chunk') {
           // 流式 chunk 批量合并：40ms 内到达的 chunk 一次应用、一次重建，
           // 避免逐 token setState 导致的 UI 线程风暴。
@@ -644,4 +671,50 @@ final directoryListingProvider =
   }
   final value = await connection.api.rpc('host.listDirectory', {'path': ?path});
   return DirectoryListing.fromJson((value as Map).cast<String, dynamic>());
+});
+
+// ---------------------------------------------------------------------------
+// 子代理列表（subagent.list）
+// ---------------------------------------------------------------------------
+
+class SubagentEntry {
+  SubagentEntry({
+    required this.id,
+    required this.mode,
+    required this.activity,
+    required this.hasChildren,
+    this.label,
+    this.diagnosticReason,
+  });
+
+  final String id;
+  final String mode; // one-shot | continuable | ''(diagnostic)
+  final String activity; // running | inactive
+  final bool hasChildren;
+  final String? label;
+
+  /// 诊断行的原因（corrupt/unsupported/unavailable），正常条目为 null。
+  final String? diagnosticReason;
+
+  factory SubagentEntry.fromJson(Map<String, dynamic> json) => SubagentEntry(
+        id: json['id'] as String? ?? '',
+        mode: json['mode'] as String? ?? '',
+        activity: json['activity'] as String? ?? '',
+        hasChildren: json['hasChildren'] as bool? ?? false,
+        label: json['label'] as String?,
+        diagnosticReason: json['reason'] as String?,
+      );
+}
+
+final subagentListProvider =
+    FutureProvider.family<List<SubagentEntry>, String>((ref, parentSessionId) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) return const [];
+  final value = await connection.api.rpc('subagent.list', {'parentSessionId': parentSessionId});
+  final map = (value as Map).cast<String, dynamic>();
+  return (map['entries'] as List?)
+          ?.whereType<Map<String, dynamic>>()
+          .map(SubagentEntry.fromJson)
+          .toList() ??
+      const [];
 });
