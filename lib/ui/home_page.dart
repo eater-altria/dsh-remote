@@ -519,6 +519,14 @@ class _DirectoryPickerDialog extends ConsumerStatefulWidget {
 
 class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> {
   String? _currentPath;
+  bool _manual = false; // browse 能力不可用时降级为手动输入
+  final _manualController = TextEditingController();
+
+  @override
+  void dispose() {
+    _manualController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -531,7 +539,28 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
         height: 380,
         child: listing.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(child: Text('读取失败: $e')),
+          error: (e, _) {
+            // host 只组合了 native 选择器时 listDirectory 不可用 → 降级手动输入
+            if (_manual || '$e'.contains('directory-picker-unavailable')) {
+              return _ManualPathInput(controller: _manualController);
+            }
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('读取失败: $e', textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () => setState(() => _manual = true),
+                      child: const Text('改为手动输入路径'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
           data: (data) => Column(
             children: [
               // 面包屑
@@ -572,10 +601,13 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
         FilledButton(
           onPressed: () {
-            final data = listing.valueOrNull;
-            Navigator.pop(context, data?.path);
+            if (_manual || listing.hasError) {
+              Navigator.pop(context, _manualController.text.trim());
+            } else {
+              Navigator.pop(context, listing.valueOrNull?.path);
+            }
           },
-          child: const Text('选择此目录'),
+          child: Text(_manual || listing.hasError ? '使用此路径' : '选择此目录'),
         ),
       ],
     );
@@ -634,6 +666,34 @@ class _SearchResults extends ConsumerWidget {
           },
         );
       },
+    );
+  }
+}
+
+/// 目录浏览器降级：手动输入绝对路径。
+class _ManualPathInput extends StatelessWidget {
+  const _ManualPathInput({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('此主机只提供原生目录选择器，手机端请手动输入绝对路径：',
+            style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 12),
+        TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '目录路径',
+            hintText: '/Users/you/projects/demo',
+          ),
+        ),
+      ],
     );
   }
 }
