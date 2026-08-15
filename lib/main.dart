@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'api/notifications.dart';
 import 'state/providers.dart';
 import 'ui/home_page.dart';
 import 'ui/setup_page.dart';
 import 'ui/theme.dart';
 
-void main() {
-  runApp(const ProviderScope(child: DshRemoteApp()));
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final container = ProviderContainer();
+  await container.read(notificationServiceProvider).init();
+  runApp(UncontrolledProviderScope(container: container, child: const DshRemoteApp()));
 }
 
 class DshRemoteApp extends ConsumerWidget {

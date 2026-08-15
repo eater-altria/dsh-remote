@@ -41,6 +41,7 @@ dependencies:
   flutter_markdown: ^0.7.4
   url_launcher: ^6.3.0
   image_picker: ^1.1.2
+  flutter_local_notifications: ^19.5.0
 
 dev_dependencies:
   flutter_test:
