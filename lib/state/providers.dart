@@ -209,6 +209,7 @@ class ChatState {
     this.queue = const [],
     this.sending = false,
     this.scrollSignal = 0,
+    this.goal,
   });
 
   final String sessionId;
@@ -224,6 +225,9 @@ class ChatState {
   /// 单调递增信号：尾部历史页加载完成时 +1，UI 据此跳到底部。
   final int scrollSignal;
 
+  /// `goal` 投影：进行中的目标（无目标时为 null）。
+  final GoalView? goal;
+
   List<ChatItem> get items => fold?.items ?? const [];
   bool get running => fold?.running ?? false;
   String? get title => fold?.title;
@@ -238,6 +242,7 @@ class ChatState {
     List<QueueItem>? queue,
     bool? sending,
     int? scrollSignal,
+    GoalView? Function()? goal,
   }) =>
       ChatState(
         sessionId: sessionId,
@@ -250,6 +255,7 @@ class ChatState {
         queue: queue ?? this.queue,
         sending: sending ?? this.sending,
         scrollSignal: scrollSignal ?? this.scrollSignal,
+        goal: goal != null ? goal() : this.goal,
       );
 }
 
@@ -337,11 +343,16 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
       }
       // Title also rides the projections block on the tail page.
       final projections = map['projections'];
+      GoalView? goal = state.goal;
       if (projections is Map<String, dynamic>) {
         final values = projections['values'];
         if (values is Map<String, dynamic>) {
           final t = values['title'];
           if (t is String && t.isNotEmpty) fold.title = t;
+          if (values.containsKey('goal')) {
+            final g = GoalView.fromProjection(values['goal']);
+            goal = g.exists ? g : null;
+          }
         }
       }
       state = state.copyWith(
@@ -351,6 +362,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
         historyError: () => null,
         // 尾部页加载完成 → 通知 UI 跳到底部。
         scrollSignal: beforeSeq == null ? state.scrollSignal + 1 : null,
+        goal: beforeSeq == null ? () => goal : null,
       );
     } catch (e) {
       if (generation != _historyGeneration) return;
@@ -440,10 +452,28 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
             fold.title = value;
             state = state.copyWith(fold: fold);
           }
+        } else if (payload['key'] == 'goal') {
+          final g = GoalView.fromProjection(payload['value']);
+          state = state.copyWith(goal: () => g.exists ? g : null);
         }
       default:
         break;
     }
+  }
+
+  /// goal.* —— CAS 动词；读侧走 `goal` 投影（goal/change 帧会带新值回来）。
+  Future<void> goalAction(String verb, {String? objective, int? maxGoalRounds}) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) return;
+    final goal = state.goal;
+    final payload = <String, dynamic>{'sessionId': arg};
+    if (verb != 'create') {
+      if (goal == null || !goal.exists) return;
+      payload['ref'] = {'id': goal.id, 'revision': goal.revision};
+    }
+    if (objective != null) payload['objective'] = objective;
+    if (maxGoalRounds != null) payload['maxGoalRounds'] = maxGoalRounds;
+    await connection.api.rpc('goal.$verb', payload);
   }
 
   /// Send a user prompt (queued behind an active turn).
@@ -498,3 +528,120 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
 }
 
 final chatProvider = NotifierProvider.family<ChatNotifier, ChatState, String>(ChatNotifier.new);
+
+// ---------------------------------------------------------------------------
+// 模型目录（per session）
+// ---------------------------------------------------------------------------
+
+class SessionModels {
+  SessionModels({required this.current, required this.routable, required this.groups});
+
+  final ModelSelection current;
+  final bool routable;
+  final List<ModelProviderGroup> groups;
+}
+
+/// `session.models`：当前选择 + provider 分组目录。selectModel 后失效重取。
+final sessionModelsProvider = FutureProvider.family<SessionModels, String>((ref, sessionId) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) {
+    throw StateError('未连接');
+  }
+  final value = await connection.api.rpc('session.models', {'sessionId': sessionId});
+  final map = (value as Map).cast<String, dynamic>();
+  return SessionModels(
+    current: ModelSelection.fromJson((map['current'] as Map?)?.cast<String, dynamic>() ?? const {}),
+    routable: map['routable'] as bool? ?? false,
+    groups:
+        (map['groups'] as List?)?.whereType<Map<String, dynamic>>().map(ModelProviderGroup.fromJson).toList() ??
+            const [],
+  );
+});
+
+/// 切换当前会话的模型选择（host 会把它存为部署默认值）。
+Future<void> selectModel(WidgetRef ref, String sessionId, String provider, String model) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return;
+  await connection.api.rpc('session.selectModel', {
+    'sessionId': sessionId,
+    'provider': provider,
+    'model': model,
+  });
+  ref.invalidate(sessionModelsProvider(sessionId));
+}
+
+// ---------------------------------------------------------------------------
+// 技能目录（per session，供 `/` 自动补全）
+// ---------------------------------------------------------------------------
+
+final skillListProvider = FutureProvider.family<List<SkillEntry>, String>((ref, sessionId) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) return const [];
+  final value = await connection.api.rpc('skill.list', {'sessionId': sessionId});
+  final map = (value as Map).cast<String, dynamic>();
+  return (map['skills'] as List?)?.whereType<Map<String, dynamic>>().map(SkillEntry.fromJson).toList() ??
+      const [];
+});
+
+// ---------------------------------------------------------------------------
+// 会话操作（rename / fork / archive）
+// ---------------------------------------------------------------------------
+
+/// 重命名会话，返回宿主规范化后的标题。
+Future<String?> renameSession(WidgetRef ref, String sessionId, String title) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return null;
+  final value = await connection.api.rpc('session.rename', {'sessionId': sessionId, 'title': title});
+  final normalized = ((value as Map)['title']) as String?;
+  ref.invalidate(rosterProvider);
+  return normalized;
+}
+
+/// 从某个事件锚点分叉会话，返回新 sessionId。
+Future<String?> forkSession(WidgetRef ref, String sessionId, {int? atSeq}) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return null;
+  final value = await connection
+      .api
+      .rpc('session.fork', {'sessionId': sessionId, 'atSeq': ?atSeq});
+  ref.invalidate(rosterProvider);
+  return ((value as Map)['sessionId']) as String?;
+}
+
+/// 归档/取消归档会话（host 应答完整集合，本地直接刷新 roster）。
+Future<void> archiveSession(WidgetRef ref, String sessionId, {required bool archived}) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return;
+  await connection.api.rpc('workspace.archiveSession', {'sessionId': sessionId, 'archived': archived});
+  ref.invalidate(rosterProvider);
+}
+
+// ---------------------------------------------------------------------------
+// 会话搜索
+// ---------------------------------------------------------------------------
+
+final sessionSearchProvider =
+    FutureProvider.family<List<SessionSearchItem>, String>((ref, query) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected || query.trim().isEmpty) {
+    return const [];
+  }
+  final value = await connection.api.rpc('session.search', {'query': query.trim()});
+  final map = (value as Map).cast<String, dynamic>();
+  return (map['items'] as List?)?.whereType<Map<String, dynamic>>().map(SessionSearchItem.fromJson).toList() ??
+      const [];
+});
+
+// ---------------------------------------------------------------------------
+// 目录浏览（host.listDirectory，供 workspace 创建选择目录）
+// ---------------------------------------------------------------------------
+
+final directoryListingProvider =
+    FutureProvider.family<DirectoryListing, String?>((ref, path) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) {
+    throw StateError('未连接');
+  }
+  final value = await connection.api.rpc('host.listDirectory', {'path': ?path});
+  return DirectoryListing.fromJson((value as Map).cast<String, dynamic>());
+});

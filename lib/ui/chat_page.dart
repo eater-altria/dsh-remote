@@ -116,12 +116,27 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               tooltip: '停止当前回合',
               onPressed: () => notifier.cancel(),
             ),
+          IconButton(
+            icon: const Icon(Icons.model_training),
+            tooltip: '选择模型',
+            onPressed: () => _showModelSheet(),
+          ),
+          PopupMenuButton<String>(
+            onSelected: _onSessionMenu,
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'rename', child: Text('重命名')),
+              PopupMenuItem(value: 'fork', child: Text('分叉会话')),
+              PopupMenuItem(value: 'archive', child: Text('归档')),
+            ],
+          ),
         ],
       ),
       body: Column(
         children: [
+          if (chat.goal != null && chat.goal!.exists) _GoalBanner(sessionId: widget.sessionId, goal: chat.goal!),
           Expanded(child: _buildList(chat, notifier)),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
+          _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
           _buildComposer(chat, notifier),
         ],
       ),
@@ -226,6 +241,95 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _showModelSheet() async {
+    final models = await ref.read(sessionModelsProvider(widget.sessionId).future);
+    if (!mounted) return;
+    final selected = await showModalBottomSheet<ModelCatalogModel>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return ListView(
+          shrinkWrap: true,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Text('当前：${models.current.provider} / ${models.current.model}'
+                  '${models.routable ? '' : '（当前 provider 不可路由）'}'),
+            ),
+            for (final group in models.groups) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                child: Text(group.name, style: theme.textTheme.titleSmall),
+              ),
+              for (final m in group.models)
+                ListTile(
+                  dense: true,
+                  title: Text(m.name),
+                  subtitle: m.description != null
+                      ? Text(m.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
+                      : null,
+                  trailing: models.current.provider == group.id && models.current.model == m.id
+                      ? Icon(Icons.check, color: theme.colorScheme.primary)
+                      : null,
+                  onTap: () => Navigator.pop(context, m),
+                ),
+            ],
+          ],
+        );
+      },
+    );
+    if (selected != null) {
+      final provider = models.groups
+          .firstWhere((g) => g.models.any((m) => m.id == selected.id),
+              orElse: () => models.groups.first)
+          .id;
+      try {
+        await selectModel(ref, widget.sessionId, provider, selected.id);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换模型失败: $e')));
+        }
+      }
+    }
+  }
+
+  Future<void> _onSessionMenu(String value) async {
+    switch (value) {
+      case 'rename':
+        final controller = TextEditingController(text: ref.read(chatProvider(widget.sessionId)).title);
+        final title = await showDialog<String>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('重命名会话'),
+            content: TextField(controller: controller, autofocus: true),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('保存')),
+            ],
+          ),
+        );
+        if (title != null && title.isNotEmpty) {
+          await renameSession(ref, widget.sessionId, title);
+        }
+      case 'fork':
+        try {
+          final childId = await forkSession(ref, widget.sessionId);
+          if (childId != null && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已分叉为新会话')));
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('分叉失败: $e')));
+          }
+        }
+      case 'archive':
+        await archiveSession(ref, widget.sessionId, archived: true);
+        if (mounted) Navigator.of(context).pop();
+    }
   }
 
   Future<void> _showQuestionSheet(PendingQuestion pending) async {
@@ -635,6 +739,130 @@ class _OptionTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// `/` 前缀技能自动补全条（输入以 / 开头且不含空格时出现）。
+class _SkillSuggestions extends ConsumerWidget {
+  const _SkillSuggestions({required this.sessionId, required this.controller});
+
+  final String sessionId;
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final skills = ref.watch(skillListProvider(sessionId)).value ?? const <SkillEntry>[];
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        var text = value.text;
+        if (text.startsWith('／')) text = '/${text.substring(1)}';
+        if (!text.startsWith('/') || text.contains(' ') || text.length < 2) {
+          return const SizedBox.shrink();
+        }
+        final query = text.substring(1).toLowerCase();
+        final matches = skills.where((s) => s.name.toLowerCase().contains(query)).take(6).toList();
+        if (matches.isEmpty) return const SizedBox.shrink();
+        final theme = Theme.of(context);
+        return Container(
+          constraints: const BoxConstraints(maxHeight: 200),
+          margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: theme.colorScheme.outlineVariant),
+          ),
+          child: ListView.builder(
+            shrinkWrap: true,
+            padding: EdgeInsets.zero,
+            itemCount: matches.length,
+            itemBuilder: (context, i) {
+              final skill = matches[i];
+              return InkWell(
+                onTap: () {
+                  controller.text = '/${skill.name} ';
+                  controller.selection = TextSelection.collapsed(offset: controller.text.length);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('/${skill.name}',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.primary, fontWeight: FontWeight.w600)),
+                      Text(skill.description,
+                          maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 进行中的目标横幅（goal 投影驱动）。
+class _GoalBanner extends ConsumerWidget {
+  const _GoalBanner({required this.sessionId, required this.goal});
+
+  final String sessionId;
+  final GoalView goal;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final (icon, label, color) = switch (goal.phase) {
+      'active' => (Icons.flag, '进行中', theme.colorScheme.tertiary),
+      'paused' => (Icons.pause_circle_outline, '已暂停', theme.colorScheme.secondary),
+      'blocked' => (Icons.error_outline, '受阻', theme.colorScheme.error),
+      'complete' => (Icons.check_circle_outline, '已完成', theme.colorScheme.primary),
+      _ => (Icons.flag_outlined, goal.phase, theme.colorScheme.outline),
+    };
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${goal.objective}${goal.maxGoalRounds > 0 ? '（${goal.roundsStarted}/${goal.maxGoalRounds} 轮）' : ''}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+          if (goal.phase == 'active')
+            IconButton(
+              icon: const Icon(Icons.pause, size: 18),
+              tooltip: '暂停目标',
+              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('pause'),
+            ),
+          if (goal.phase == 'paused' || goal.phase == 'blocked')
+            IconButton(
+              icon: const Icon(Icons.play_arrow, size: 18),
+              tooltip: '恢复目标',
+              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('resume'),
+            ),
+          if (goal.phase == 'active' || goal.phase == 'paused')
+            IconButton(
+              icon: const Icon(Icons.check, size: 18),
+              tooltip: '标记完成',
+              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('complete'),
+            ),
+        ],
       ),
     );
   }

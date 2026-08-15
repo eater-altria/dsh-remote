@@ -192,3 +192,149 @@ class ModelSelection {
         reasoningEffort: json['reasoningEffort'] as String?,
       );
 }
+
+/// `session.models` 的 provider 分组目录。
+class ModelProviderGroup {
+  ModelProviderGroup({required this.id, required this.name, required this.models});
+
+  final String id;
+  final String name;
+  final List<ModelCatalogModel> models;
+
+  factory ModelProviderGroup.fromJson(Map<String, dynamic> json) => ModelProviderGroup(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        models: (json['models'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(ModelCatalogModel.fromJson)
+                .toList() ??
+            const [],
+      );
+}
+
+class ModelCatalogModel {
+  ModelCatalogModel({required this.id, required this.name, this.description});
+
+  final String id;
+  final String name;
+  final String? description;
+
+  factory ModelCatalogModel.fromJson(Map<String, dynamic> json) => ModelCatalogModel(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        description: json['description'] as String?,
+      );
+}
+
+/// `skill.list` 条目。
+class SkillEntry {
+  SkillEntry({required this.name, required this.description, this.whenToUse, required this.modelInvocable});
+
+  final String name;
+  final String description;
+  final String? whenToUse;
+  final bool modelInvocable;
+
+  factory SkillEntry.fromJson(Map<String, dynamic> json) => SkillEntry(
+        name: json['name'] as String? ?? '',
+        description: json['description'] as String? ?? '',
+        whenToUse: json['whenToUse'] as String?,
+        modelInvocable: json['modelInvocable'] as bool? ?? true,
+      );
+}
+
+/// `goal` 会话投影（goal.* 变更的读侧）。
+class GoalView {
+  GoalView({
+    required this.id,
+    required this.revision,
+    required this.objective,
+    required this.phase,
+    required this.roundsStarted,
+    required this.maxGoalRounds,
+    this.blockedReason,
+  });
+
+  final String id;
+  final int revision;
+  final String objective;
+  final String phase; // active | paused | blocked | complete | none
+  final int roundsStarted;
+  final int maxGoalRounds;
+  final String? blockedReason;
+
+  factory GoalView.fromProjection(dynamic value) {
+    if (value is! Map<String, dynamic>) return empty;
+    final goal = value['goal'];
+    if (goal is! Map<String, dynamic>) return empty;
+    final blocked = goal['blockedReason'];
+    return GoalView(
+      id: goal['id'] as String? ?? '',
+      revision: (goal['revision'] as num?)?.toInt() ?? 0,
+      objective: goal['objective'] as String? ?? '',
+      phase: goal['phase'] as String? ?? 'active',
+      roundsStarted: (value['roundsStarted'] as num?)?.toInt() ?? 0,
+      maxGoalRounds: (goal['maxGoalRounds'] as num?)?.toInt() ?? 0,
+      blockedReason: blocked is Map<String, dynamic> ? blocked['message'] as String? : null,
+    );
+  }
+
+  static final GoalView empty = GoalView(
+    id: '',
+    revision: 0,
+    objective: '',
+    phase: 'none',
+    roundsStarted: 0,
+    maxGoalRounds: 0,
+  );
+
+  bool get exists => id.isNotEmpty;
+}
+
+/// `host.listDirectory` 的目录条目。
+class DirectoryEntry {
+  DirectoryEntry({required this.name, required this.path, required this.hidden});
+
+  final String name;
+  final String path;
+  final bool hidden;
+
+  factory DirectoryEntry.fromJson(Map<String, dynamic> json) => DirectoryEntry(
+        name: json['name'] as String? ?? '',
+        path: json['path'] as String? ?? '',
+        hidden: json['hidden'] as bool? ?? false,
+      );
+}
+
+class DirectoryListing {
+  DirectoryListing({required this.path, required this.home, required this.crumbs, required this.entries});
+
+  final String path;
+  final String home;
+  final List<DirectoryEntry> crumbs;
+  final List<DirectoryEntry> entries;
+
+  factory DirectoryListing.fromJson(Map<String, dynamic> json) => DirectoryListing(
+        path: json['path'] as String? ?? '',
+        home: json['home'] as String? ?? '',
+        crumbs:
+            (json['crumbs'] as List?)?.whereType<Map<String, dynamic>>().map(DirectoryEntry.fromJson).toList() ??
+                const [],
+        entries:
+            (json['entries'] as List?)?.whereType<Map<String, dynamic>>().map(DirectoryEntry.fromJson).toList() ??
+                const [],
+      );
+}
+
+/// `session.search` 命中。
+class SessionSearchItem {
+  SessionSearchItem({required this.sessionId, required this.snippet});
+
+  final String sessionId;
+  final String snippet;
+
+  factory SessionSearchItem.fromJson(Map<String, dynamic> json) => SessionSearchItem(
+        sessionId: json['sessionId'] as String? ?? '',
+        snippet: json['snippet'] as String? ?? '',
+      );
+}
