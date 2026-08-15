@@ -137,6 +137,39 @@ void main() {
   });
 
   foldRobustnessTests();
+
+  test('系统注入消息（source.kind != user）不按用户气泡渲染', () {
+    final fold = ChatFold();
+    // 真用户消息
+    fold.applyEvent({
+      'type': 'user/message',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'id': 'u1',
+        'source': {'kind': 'user', 'rpcId': 'r1'},
+        'content': [
+          {'type': 'text', 'text': '主人说的话'}
+        ]
+      },
+    });
+    // 子代理通报
+    fold.applyEvent({
+      'type': 'user/message',
+      'seq': 2,
+      'time': 0,
+      'data': {
+        'id': 's1',
+        'source': {'kind': 'subagent-report'},
+        'content': [
+          {'type': 'text', 'text': 'Background subagent xxx reported: ...'}
+        ]
+      },
+    });
+    expect(fold.items[0], isA<UserItem>());
+    expect(fold.items[1], isA<SystemItem>());
+    expect((fold.items[1] as SystemItem).kind, 'subagent-report');
+  });
 }
 
 void foldRobustnessTests() {

@@ -143,6 +143,16 @@ class ToolItem extends ChatItem {
       );
 }
 
+/// 系统注入的上下文消息（user/message 但 source.kind != 'user'）：
+/// 子代理通报、审批回执、任务完成等——不是人类说的话，不按用户气泡渲染。
+class SystemItem extends ChatItem {
+  const SystemItem({required super.seq, required this.kind, required this.text});
+
+  /// source.kind，如 subagent-report / subagent-settled。
+  final String kind;
+  final String text;
+}
+
 class NoticeItem extends ChatItem {
   const NoticeItem({required super.seq, required this.text});
   final String text;
@@ -211,6 +221,13 @@ class ChatFold {
         // 按 message.id 去重：历史页与 live 帧重叠时不重复落表（健壮性 #4）。
         final msgId = map['id'] as String?;
         if (msgId != null && !_seenMessageIds.add(msgId)) return;
+        // source.kind 区分真用户与系统注入（subagent-report/-settled 等）。
+        final source = map['source'];
+        final kind = source is Map<String, dynamic> ? source['kind'] as String? : null;
+        if (kind != null && kind != 'user') {
+          items.add(SystemItem(seq: seq, kind: kind, text: text));
+          return;
+        }
         items.add(UserItem(seq: seq, text: text, images: images));
       case 'assistant/chunk':
         if (!live) return; // 历史折叠跳过流式中间态（性能关键路径）

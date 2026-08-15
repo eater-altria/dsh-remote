@@ -74,6 +74,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             OtherBlock() => 0,
           }),
       UserItem() => last.text.length,
+      SystemItem() => last.text.length,
       ToolItem() => last.resultPreview?.length ?? 0,
       NoticeItem() => last.text.length,
     };
@@ -228,6 +229,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             AssistantItem() => _AssistantRow(item: item),
             ToolItem() => _ToolCard(item: item),
             NoticeItem() => _NoticeRow(item: item),
+            SystemItem() => _SystemCard(item: item),
           },
         );
       },
@@ -1606,4 +1608,65 @@ void _showMessageActions(
       ),
     ),
   );
+}
+
+/// 系统注入消息卡片（子代理通报等）：左侧小图标 + 灰底，长文可折叠。
+class _SystemCard extends StatefulWidget {
+  const _SystemCard({required this.item});
+
+  final SystemItem item;
+
+  @override
+  State<_SystemCard> createState() => _SystemCardState();
+}
+
+class _SystemCardState extends State<_SystemCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final (icon, label) = switch (widget.item.kind) {
+      'subagent-report' => (Icons.smart_toy_outlined, '子代理汇报'),
+      'subagent-settled' => (Icons.check_circle_outline, '子代理完成'),
+      _ => (Icons.info_outline, '系统'),
+    };
+    final long = widget.item.text.length > 160;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 13, color: theme.colorScheme.outline),
+              const SizedBox(width: 6),
+              Text(label, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+              if (long) ...[
+                const Spacer(),
+                GestureDetector(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Icon(_expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 14, color: theme.colorScheme.outline),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            widget.item.text,
+            maxLines: _expanded || !long ? null : 4,
+            overflow: _expanded || !long ? null : TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
 }
