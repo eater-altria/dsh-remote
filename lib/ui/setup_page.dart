@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/client.dart';
 import '../state/providers.dart';
 import 'theme.dart';
 
@@ -14,12 +15,14 @@ class SetupPage extends ConsumerStatefulWidget {
 
 class _SetupPageState extends ConsumerState<SetupPage> {
   final _controller = TextEditingController();
+  final _tokenController = TextEditingController();
   bool _testing = false;
   String? _error;
 
   @override
   void dispose() {
     _controller.dispose();
+    _tokenController.dispose();
     super.dispose();
   }
 
@@ -33,8 +36,10 @@ class _SetupPageState extends ConsumerState<SetupPage> {
     try {
       // Probe host.describe before persisting the profile.
       final url = normalizeBaseUrl(input);
+      final token = _tokenController.text.trim();
       final probe = ref.read(connectionProbeProvider);
-      await probe(url);
+      await probe(url, token: token.isEmpty ? null : token);
+      await ref.read(relayTokenProvider.notifier).setToken(token);
       await ref.read(serverProfileProvider.notifier).setUrl(url);
     } catch (e) {
       setState(() => _error = e.toString());
@@ -78,6 +83,17 @@ class _SetupPageState extends ConsumerState<SetupPage> {
                     autocorrect: false,
                     onSubmitted: (_) => _connect(),
                   ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _tokenController,
+                    decoration: const InputDecoration(
+                      labelText: '访问令牌（可选）',
+                      hintText: '主机 relay 设置了 DSH_RELAY_TOKEN 时必填',
+                      prefixIcon: Icon(Icons.key_outlined),
+                    ),
+                    obscureText: true,
+                    autocorrect: false,
+                  ),
                   const SizedBox(height: 16),
                   FilledButton.icon(
                     onPressed: _testing ? null : _connect,
@@ -118,9 +134,10 @@ class _SetupPageState extends ConsumerState<SetupPage> {
 
 /// One-shot probe used by setup: verifies host.describe succeeds against a
 /// candidate base URL before the profile is persisted.
-final connectionProbeProvider = Provider<Future<void> Function(String)>((ref) {
-  return (String baseUrl) async {
-    final api = ref.read(apiFactoryProvider)(baseUrl);
+final connectionProbeProvider =
+    Provider<Future<void> Function(String, {String? token})>((ref) {
+  return (String baseUrl, {String? token}) async {
+    final api = DshApi(baseUrl, token: token);
     try {
       await api.rpc('host.describe');
     } finally {

@@ -22,6 +22,7 @@ import '../api/wire.dart';
 
 const _kServerUrlKey = 'dsh.serverUrl';
 const _kThemeModeKey = 'dsh.themeMode'; // system | light | dark
+const _kRelayTokenKey = 'dsh.relayToken';
 
 class ServerProfileNotifier extends Notifier<String?> {
   @override
@@ -62,6 +63,28 @@ String normalizeBaseUrl(String input) {
 
 final serverProfileProvider = NotifierProvider<ServerProfileNotifier, String?>(ServerProfileNotifier.new);
 
+/// relay 访问令牌（对应主机的 DSH_RELAY_TOKEN），持久化存储。
+class RelayTokenNotifier extends Notifier<String> {
+  @override
+  String build() {
+    _load();
+    return '';
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getString(_kRelayTokenKey) ?? '';
+  }
+
+  Future<void> setToken(String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kRelayTokenKey, token);
+    state = token;
+  }
+}
+
+final relayTokenProvider = NotifierProvider<RelayTokenNotifier, String>(RelayTokenNotifier.new);
+
 /// 当前聊天页的 sessionId（ProviderScope override 注入，供深层图片/反馈组件读取）。
 final currentSessionIdProvider = Provider<String>((ref) => throw UnimplementedError('未注入 sessionId'));
 
@@ -82,7 +105,7 @@ class ConnectionNotifier extends Notifier<DshConnection?> {
     if (url == null || url.isEmpty) {
       return null;
     }
-    final connection = DshConnection(url);
+    final connection = DshConnection(url, token: ref.watch(relayTokenProvider));
     ref.onDispose(() => connection.dispose());
     unawaited(connection.connect());
     return connection;
@@ -219,6 +242,7 @@ class ChatState {
     this.scrollSignal = 0,
     this.goal,
     this.projections = const {},
+    this.jobs = const [],
   });
 
   final String sessionId;
@@ -240,6 +264,9 @@ class ChatState {
   /// 全部会话投影的原始值（todos / plan / permissions / imageLimits …）。
   final Map<String, dynamic> projections;
 
+  /// 后台任务快照（session/jobs 帧；[{id, kind, label, status, startedAt}]）。
+  final List<Map<String, dynamic>> jobs;
+
   List<ChatItem> get items => fold?.items ?? const [];
   bool get running => fold?.running ?? false;
   String? get title => fold?.title;
@@ -256,6 +283,7 @@ class ChatState {
     int? scrollSignal,
     GoalView? Function()? goal,
     Map<String, dynamic>? projections,
+    List<Map<String, dynamic>>? jobs,
   }) =>
       ChatState(
         sessionId: sessionId,
@@ -270,6 +298,7 @@ class ChatState {
         scrollSignal: scrollSignal ?? this.scrollSignal,
         goal: goal != null ? goal() : this.goal,
         projections: projections ?? this.projections,
+        jobs: jobs ?? this.jobs,
       );
 }
 
@@ -342,7 +371,11 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
       final response = await http
           .post(
             Uri.parse('${connection.baseUrl}/__relay/history.slim'),
-            headers: {'content-type': 'application/json'},
+            headers: {
+              'content-type': 'application/json',
+              if (connection.token != null && connection.token!.isNotEmpty)
+                'x-relay-token': connection.token!,
+            },
             body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 30));
@@ -501,6 +534,9 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
             }).toList() ??
             const [];
         state = state.copyWith(queue: items);
+      case 'session/jobs':
+        final jobs = (payload['jobs'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? const [];
+        state = state.copyWith(jobs: jobs);
       case 'session/projection':
         if (payload['key'] == 'title') {
           final value = payload['value'];

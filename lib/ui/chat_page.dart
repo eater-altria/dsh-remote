@@ -173,6 +173,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: _AssistantRow(item: chat.fold!.partial!),
             ),
+          if (chat.jobs.isNotEmpty) _JobsStrip(jobs: chat.jobs),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
             _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
             _buildComposer(chat, notifier),
@@ -1508,6 +1509,43 @@ class _PlanBanner extends StatelessWidget {
               style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onPrimaryContainer),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 后台任务条（session/jobs 快照）：运行中的 bash 任务等。
+class _JobsStrip extends StatelessWidget {
+  const _JobsStrip({required this.jobs});
+
+  final List<Map<String, dynamic>> jobs;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          for (final job in jobs)
+            Chip(
+              avatar: Icon(
+                switch (job['kind']) {
+                  'bash' => Icons.terminal,
+                  'subagent' => Icons.account_tree_outlined,
+                  _ => Icons.work_outline,
+                },
+                size: 14,
+              ),
+              label: Text('${job['label'] ?? job['id']} · ${job['status']}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              visualDensity: VisualDensity.compact,
+            ),
         ],
       ),
     );

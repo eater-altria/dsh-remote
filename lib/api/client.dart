@@ -10,6 +10,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'models.dart';
@@ -19,10 +20,18 @@ enum ConnStatus { disconnected, connecting, connected, reconnecting, failed }
 
 /// Low-level unary RPC against one host base URL.
 class DshApi {
-  DshApi(this.baseUrl);
+  DshApi(this.baseUrl, {this.token});
 
   /// e.g. `http://192.168.1.5:3080` (no trailing slash).
   final String baseUrl;
+
+  /// relay 访问令牌（DSH_RELAY_TOKEN 启用时必需）。
+  final String? token;
+
+  Map<String, String> get _headers => {
+        'content-type': 'application/json',
+        if (token != null && token!.isNotEmpty) 'x-relay-token': token!,
+      };
 
   final http.Client _http = http.Client();
 
@@ -36,7 +45,7 @@ class DshApi {
     final response = await _http
         .post(
           _apiUri(method),
-          headers: {'content-type': 'application/json'},
+          headers: _headers,
           body: jsonEncode(clientRequest(rpcId, method, payload)),
         )
         .timeout(const Duration(seconds: 30));
@@ -52,7 +61,7 @@ class DshApi {
     final response = await _http
         .post(
           _apiUri('respond'),
-          headers: {'content-type': 'application/json'},
+          headers: _headers,
           body: jsonEncode(clientResponseOk(rpcId, value)),
         )
         .timeout(const Duration(seconds: 30));
@@ -76,10 +85,11 @@ class DshApi {
 /// automatic reconnect. Frames are exposed as broadcast streams of raw
 /// payload maps (`MuxFrame` / `HostFrame`).
 class DshConnection extends ChangeNotifier {
-  DshConnection(this.baseUrl);
+  DshConnection(this.baseUrl, {this.token});
 
   final String baseUrl;
-  late final DshApi api = DshApi(baseUrl);
+  final String? token;
+  late final DshApi api = DshApi(baseUrl, token: token);
 
   ConnStatus status = ConnStatus.disconnected;
   HostDescription? host;
@@ -143,7 +153,13 @@ class DshConnection extends ChangeNotifier {
     void Function(StreamSubscription) setSub,
     int generation,
   ) {
-    final channel = WebSocketChannel.connect(Uri.parse('$_wsBase/api/$path'));
+    // IO 实现支持自定义握手头（relay token 鉴权用）。
+    final channel = IOWebSocketChannel.connect(
+      Uri.parse('$_wsBase/api/$path'),
+      headers: {
+        if (token != null && token!.isNotEmpty) 'x-relay-token': token!,
+      },
+    );
     setChannel(channel);
     var opened = false;
     setSub(channel.stream.listen(

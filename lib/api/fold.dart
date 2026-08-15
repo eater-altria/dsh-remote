@@ -285,8 +285,21 @@ class ChatFold {
       case 'compaction/summary':
         items.add(NoticeItem(seq: seq, text: '⤬ 上下文已压缩（较早的对话已折叠为摘要）'));
       case 'command/run':
-        final line = map['line'] ?? map['command'];
-        if (line is String) items.add(NoticeItem(seq: seq, text: line));
+        // 真实结构：{ commandId, name, args?, source }
+        final name = map['name'];
+        if (name is String) {
+          final args = map['args'];
+          items.add(NoticeItem(
+              seq: seq, text: '/$name${args is String && args.isNotEmpty ? ' $args' : ''}'));
+        }
+      case 'command/done':
+        // { commandId, kind: 'success'|'error', text? }
+        final text = map['text'];
+        if (text is String && text.isNotEmpty) {
+          final kind = map['kind'];
+          items.add(NoticeItem(
+              seq: seq, text: kind == 'error' ? '⚠ $text' : text));
+        }
       default:
         // Unknown / merge-extended event types are ignored by design.
         break;

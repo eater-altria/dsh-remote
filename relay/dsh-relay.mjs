@@ -22,6 +22,21 @@ const targetHost = process.argv[3] ?? process.env.DSH_TARGET_HOST ?? '127.0.0.1'
 const targetPort = Number(process.argv[4] ?? process.env.DSH_TARGET_PORT ?? 3080);
 const targetAuthority = `${targetHost}:${targetPort}`;
 
+// 可选访问令牌：relay 会把 Host 改写成回环，等于把 loopback-only 的特权方法
+// 暴露给局域网——设置 DSH_RELAY_TOKEN 后，所有请求（含 WS 握手）必须携带
+// `x-relay-token: <token>` 头或 `?token=<token>` 查询参数。
+const relayToken = process.env.DSH_RELAY_TOKEN ?? null;
+
+function authorized(req) {
+  if (!relayToken) return true;
+  if (req.headers['x-relay-token'] === relayToken) return true;
+  try {
+    return new URL(req.url, 'http://x').searchParams.get('token') === relayToken;
+  } catch {
+    return false;
+  }
+}
+
 /** Headers safe to forward as-is (Host is rewritten separately). */
 function forwardHeaders(req) {
   const headers = { ...req.headers };
@@ -105,6 +120,11 @@ async function handleSlimHistory(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  if (!authorized(req)) {
+    res.writeHead(401, { 'content-type': 'text/plain' });
+    res.end('unauthorized: missing or invalid relay token');
+    return;
+  }
   if (req.url === '/__relay/history.slim' && req.method === 'POST') {
     handleSlimHistory(req, res);
     return;
@@ -130,6 +150,11 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
+  if (!authorized(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   const upstream = net.connect(targetPort, targetHost, () => {
     const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
     const headers = forwardHeaders(req);
@@ -155,6 +180,7 @@ server.listen(listenPort, '0.0.0.0', () => {
     .filter((i) => i && i.family === 'IPv4' && !i.internal)
     .map((i) => i.address);
   console.log(`dsh-remote relay listening on 0.0.0.0:${listenPort} -> ${targetAuthority}`);
+  console.log(relayToken ? '  auth: token required (DSH_RELAY_TOKEN)' : '  auth: OPEN (set DSH_RELAY_TOKEN to require a token)');
   for (const ip of lanIps) {
     console.log(`  phone can reach: http://${ip}:${listenPort}`);
   }
