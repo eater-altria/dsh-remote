@@ -146,6 +146,8 @@ class NekoTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: scheme.surface,
+        hintStyle: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.75)),
+        labelStyle: TextStyle(color: scheme.onSurfaceVariant),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(24),
           borderSide: BorderSide(color: scheme.outlineVariant),

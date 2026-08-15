@@ -719,7 +719,7 @@ class _AssistantRow extends ConsumerWidget {
           _Collapsible(
             icon: Icons.psychology_alt_outlined,
             label: '思考过程',
-            child: Text(text, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+            child: Text(text, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
           ),
         ];
       case ToolCallBlock(name: final name, argsRaw: final args):
@@ -757,7 +757,7 @@ class _ToolCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = !item.finished
-        ? theme.colorScheme.outline
+        ? theme.colorScheme.onSurfaceVariant
         : item.isError
             ? theme.colorScheme.error
             : theme.colorScheme.tertiary;
@@ -833,17 +833,20 @@ class _CollapsibleState extends State<_Collapsible> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(widget.icon, size: 14, color: widget.iconColor ?? theme.colorScheme.outline),
+                Icon(widget.icon, size: 14, color: widget.iconColor ?? theme.colorScheme.onSurfaceVariant),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
                     widget.label,
-                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 Icon(_expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 14, color: theme.colorScheme.outline),
+                    size: 14, color: theme.colorScheme.onSurfaceVariant),
               ],
             ),
           ),
@@ -1106,7 +1109,7 @@ class _SkillSuggestions extends ConsumerWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
-                      Icon(entry.icon, size: 14, color: theme.colorScheme.outline),
+                      Icon(entry.icon, size: 14, color: theme.colorScheme.onSurfaceVariant),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Column(
@@ -1442,7 +1445,7 @@ class _TodoBarState extends State<_TodoBar> {
                   const SizedBox(width: 8),
                   Expanded(child: Text('任务清单 $done/${todos.length}', style: theme.textTheme.bodySmall)),
                   Icon(_expanded ? Icons.expand_less : Icons.expand_more,
-                      size: 16, color: theme.colorScheme.outline),
+                      size: 16, color: theme.colorScheme.onSurfaceVariant),
                 ],
               ),
             ),
@@ -1463,7 +1466,7 @@ class _TodoBarState extends State<_TodoBar> {
                       color: switch (todo['status']) {
                         'completed' => theme.colorScheme.tertiary,
                         'in_progress' => theme.colorScheme.secondary,
-                        _ => theme.colorScheme.outline,
+                        _ => theme.colorScheme.onSurfaceVariant,
                       },
                     ),
                     const SizedBox(width: 8),
@@ -1645,15 +1648,17 @@ class _SystemCardState extends State<_SystemCard> {
         children: [
           Row(
             children: [
-              Icon(icon, size: 13, color: theme.colorScheme.outline),
+              Icon(icon, size: 13, color: theme.colorScheme.onSurfaceVariant),
               const SizedBox(width: 6),
-              Text(label, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+              Text(label,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
               if (long) ...[
                 const Spacer(),
                 GestureDetector(
                   onTap: () => setState(() => _expanded = !_expanded),
                   child: Icon(_expanded ? Icons.expand_less : Icons.expand_more,
-                      size: 14, color: theme.colorScheme.outline),
+                      size: 14, color: theme.colorScheme.onSurfaceVariant),
                 ),
               ],
             ],
