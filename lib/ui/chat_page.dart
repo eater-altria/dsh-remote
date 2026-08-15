@@ -509,7 +509,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _showSubagentsSheet() async {
-    final entries = await ref.read(subagentListProvider(widget.sessionId).future);
+    // refresh 强制重取——FutureProvider 会缓存上次结果，sheet 每次打开都要最新列表。
+    final entries = await ref.refresh(subagentListProvider(widget.sessionId).future);
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
