@@ -376,23 +376,130 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
   }
 
+  /// 思考强度选择器：返回强度 id，'' = 恢复默认，null = 取消。
+  Future<String?> _pickEffort(
+      BuildContext context, List<ModelEffort> efforts, String? current, String? defaultEffort) {
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text('思考强度', style: theme.textTheme.titleMedium),
+              ),
+              for (final e in efforts)
+                ListTile(
+                  dense: true,
+                  title: Text(e.name),
+                  subtitle: e.description != null
+                      ? Text(e.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
+                      : null,
+                  trailing: current == e.id ? const Icon(Icons.check) : null,
+                  onTap: () => Navigator.pop(context, e.id),
+                ),
+              ListTile(
+                dense: true,
+                title: const Text('默认'),
+                subtitle: Text('使用适配器默认（${defaultEffort ?? "适配器决定"}）'),
+                trailing: current == null ? const Icon(Icons.check) : null,
+                onTap: () => Navigator.pop(context, ''),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _showModelSheet() async {
-    final models = await ref.read(sessionModelsProvider(widget.sessionId).future);
+    // 子代理会话的模型目录被 subagent routing 占用（agent-busy）——优雅提示。
+    SessionModels? models;
+    try {
+      models = await ref.read(sessionModelsProvider(widget.sessionId).future);
+    } catch (_) {
+      models = null;
+    }
     if (!mounted) return;
+    if (models == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('该会话不支持切换模型（子代理的组合由父会话决定）')));
+      return;
+    }
+    final modelsData = models;
+    models = null; // 释放可变量，后续统一用 modelsData
     final selected = await showModalBottomSheet<ModelCatalogModel>(
       context: context,
       showDragHandle: true,
       builder: (context) {
         final theme = Theme.of(context);
+        // 当前模型的思考强度元数据（用于顶部直达入口）。
+        ModelCatalogModel? currentModel;
+        for (final g in modelsData.groups) {
+          if (g.id != modelsData.current.provider) continue;
+          for (final m in g.models) {
+            if (m.id == modelsData.current.model) currentModel = m;
+          }
+        }
+        final currentEfforts = currentModel?.reasoning?.efforts ?? const <ModelEffort>[];
         return ListView(
           shrinkWrap: true,
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Text('当前：${models.current.provider} / ${models.current.model}'
-                  '${models.routable ? '' : '（当前 provider 不可路由）'}'),
+              child: Text('当前：${modelsData.current.provider} / ${modelsData.current.model}'
+                  '${modelsData.routable ? '' : '（当前 provider 不可路由）'}'),
             ),
-            for (final group in models.groups) ...[
+            if (currentEfforts.isNotEmpty)
+              ListTile(
+                leading: Icon(Icons.psychology_outlined, color: theme.colorScheme.primary),
+                title: const Text('思考强度'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      modelsData.current.reasoningEffort ??
+                          currentModel?.reasoning?.defaultEffort ??
+                          '默认',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: theme.colorScheme.primary, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right, size: 18),
+                  ],
+                ),
+                onTap: () async {
+                  final effort = await _pickEffort(
+                    context,
+                    currentEfforts,
+                    modelsData.current.reasoningEffort,
+                    currentModel?.reasoning?.defaultEffort,
+                  );
+                  if (effort == null) return; // 取消
+                  if (!context.mounted) return;
+                  Navigator.pop(context); // 关掉模型面板
+                  try {
+                    await selectModel(
+                      ref,
+                      widget.sessionId,
+                      modelsData.current.provider,
+                      modelsData.current.model,
+                      reasoningEffort: effort.isEmpty ? null : effort,
+                    );
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context)
+                          .showSnackBar(SnackBar(content: Text('切换思考强度失败: $e')));
+                    }
+                  }
+                },
+              ),
+            const Divider(height: 1),
+            for (final group in modelsData.groups) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
                 child: Text(group.name, style: theme.textTheme.titleSmall),
@@ -404,7 +511,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   subtitle: m.description != null
                       ? Text(m.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
                       : null,
-                  trailing: models.current.provider == group.id && models.current.model == m.id
+                  trailing: modelsData.current.provider == group.id && modelsData.current.model == m.id
                       ? Icon(Icons.check, color: theme.colorScheme.primary)
                       : null,
                   onTap: () => Navigator.pop(context, m),
@@ -414,17 +521,25 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         );
       },
     );
-    if (selected != null) {
-      final provider = models.groups
-          .firstWhere((g) => g.models.any((m) => m.id == selected.id),
-              orElse: () => models.groups.first)
-          .id;
-      try {
-        await selectModel(ref, widget.sessionId, provider, selected.id);
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换模型失败: $e')));
-        }
+    if (selected == null) return;
+    final provider = modelsData.groups
+        .firstWhere((g) => g.models.any((m) => m.id == selected.id),
+            orElse: () => modelsData.groups.first)
+        .id;
+    // 支持思考强度的模型：点选后再选强度（取消 = 不切换）。
+    String? effort;
+    final efforts = selected.reasoning?.efforts ?? const <ModelEffort>[];
+    if (efforts.isNotEmpty && mounted) {
+      final chosen = await _pickEffort(
+          context, efforts, modelsData.current.reasoningEffort, selected.reasoning?.defaultEffort);
+      if (chosen == null) return;
+      effort = chosen.isEmpty ? null : chosen;
+    }
+    try {
+      await selectModel(ref, widget.sessionId, provider, selected.id, reasoningEffort: effort);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换模型失败: $e')));
       }
     }
   }

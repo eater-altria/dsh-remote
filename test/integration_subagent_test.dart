@@ -63,6 +63,35 @@ void main() {
       expect(find.textContaining('渲染出错'), findsNothing);
       // 应渲染出聊天列表。
       expect(find.byType(ListView), findsWidgets);
+
+    });
+  }, timeout: const Timeout(Duration(seconds: 60)));
+
+  testWidgets('model sheet exposes reasoning effort entry (parent session)', (tester) async {
+    await tester.runAsync(() async {
+      HttpOverrides.global = _RealNetwork();
+      final connection = DshConnection('http://127.0.0.1:3081');
+      await connection.connect();
+      expect(connection.status, ConnStatus.connected);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [connectionProvider.overrideWith(() => _FixedConnection(connection))],
+          child: const MaterialApp(home: ChatPage(sessionId: kParentSession)),
+        ),
+      );
+      for (var i = 0; i < 10; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await tester.pump();
+      }
+      // 打开模型面板：思考强度入口必须存在（回归：曾因补丁静默丢失）。
+      await tester.tap(find.byIcon(Icons.model_training));
+      for (var i = 0; i < 15; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await tester.pump();
+      }
+      expect(find.text('思考强度'), findsWidgets);
+      expect(find.textContaining('当前：kimi-coding / k3'), findsWidgets);
     });
   }, timeout: const Timeout(Duration(seconds: 60)));
 }
