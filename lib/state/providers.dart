@@ -362,15 +362,18 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     final generation = ++_historyGeneration;
+    final sw = Stopwatch()..start();
     try {
       final raw = await _fetchHistoryRaw(beforeSeq: beforeSeq);
       if (generation != _historyGeneration) return;
+      debugPrint('[perf] history fetch: ${sw.elapsedMilliseconds}ms, ${raw.length} bytes');
       // 解码 + 折叠放后台 isolate：数 MB 的 JSON 同步解析会冻结 UI 线程。
       final result = await compute(
         parseAndFoldHistory,
         HistoryFoldTask(body: raw, isTail: beforeSeq == null),
       );
       if (generation != _historyGeneration) return;
+      debugPrint('[perf] isolate decode+fold: ${sw.elapsedMilliseconds}ms total, ${result.fold.items.length} items');
       final fold = result.fold;
       if (beforeSeq != null) {
         // 更早的页面前插到现有列表。
@@ -417,8 +420,9 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
       case 'session/subscribed':
         final lastSeq = (payload['lastSeq'] as num?)?.toInt();
         if (lastSeq != null) _lastSeq = lastSeq;
-        // 重连后的新基线：直接与本地状态对齐一次。
-        if (lastSeq != null && state.fold != null && !_resyncing) {
+        // 重连后的新基线：与本地状态对齐一次；初始加载进行中时跳过（那次拉取
+        // 已经覆盖基线之前的全部事件）。
+        if (lastSeq != null && state.fold != null && !_resyncing && !state.loadingHistory) {
           _resyncing = true;
           unawaited(_loadHistory().whenComplete(() => _resyncing = false));
         }

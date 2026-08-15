@@ -34,6 +34,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   final _composer = TextEditingController();
   final _scroll = ScrollController();
   final List<XFile> _pendingImages = [];
+  final Stopwatch _entryWatch = Stopwatch()..start();
+  bool _entryLogged = false;
 
   /// 贴底状态：用户在底部附近时，新内容到达自动跟随；往上翻则停止跟随。
   bool _stickToBottom = true;
@@ -101,6 +103,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final chat = ref.watch(chatProvider(widget.sessionId));
     final notifier = ref.read(chatProvider(widget.sessionId).notifier);
     _maybeScrollToEnd(chat);
+    if (!_entryLogged && !chat.loadingHistory && chat.items.isNotEmpty) {
+      _entryLogged = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        debugPrint('[perf] chat first content frame: ${_entryWatch.elapsedMilliseconds}ms since page create');
+      });
+    }
 
     // 尾部历史页加载完成 → 直接跳到底部（不等动画）。
     ref.listen(chatProvider(widget.sessionId).select((s) => s.scrollSignal), (_, _) {
@@ -212,12 +220,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           );
         }
         final item = chat.items[chat.hasMore ? index - 1 : index];
-        return switch (item) {
-          UserItem() => _UserBubble(item: item),
-          AssistantItem() => _AssistantRow(item: item),
-          ToolItem() => _ToolCard(item: item),
-          NoticeItem() => _NoticeRow(item: item),
-        };
+        return RepaintBoundary(
+          child: switch (item) {
+            UserItem() => _UserBubble(item: item),
+            AssistantItem() => _AssistantRow(item: item),
+            ToolItem() => _ToolCard(item: item),
+            NoticeItem() => _NoticeRow(item: item),
+          },
+        );
       },
     );
   }

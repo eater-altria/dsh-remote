@@ -92,8 +92,10 @@ async function handleSlimHistory(req, res) {
       if (message?.source?.replayState) delete message.source.replayState;
       slimEvents.push(entry);
     }
+    const before = text.length;
     value.events = slimEvents;
     value.slim = true;
+    console.log(`[slim] ${body.sessionId} max=${envelope.payload.maxMessages}: ${before} -> ${JSON.stringify(value).length} bytes, ${slimEvents.length} events`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(value));
   } catch (err) {
