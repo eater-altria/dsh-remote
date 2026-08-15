@@ -38,7 +38,75 @@ function forwardHeaders(req) {
   return headers;
 }
 
+/**
+ * Relay-side slim history: proxies session.history upstream, strips the
+ * transient `assistant/chunk` events and bulky `replayState` blobs from the
+ * page before sending it to the phone. A 200-message raw page can be ~9 MB
+ * (40k chunk events); the slim form is typically 95%+ smaller, which removes
+ * the multi-second UI-thread jsonDecode freeze on the client.
+ *
+ *   POST /__relay/history.slim
+ *   body: { sessionId, beforeSeq?, maxMessages? }
+ *   response: the session.history ServerResponse `result.value` (slimmed),
+ *             plus `slim: true`.
+ */
+async function handleSlimHistory(req, res) {
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    const envelope = {
+      type: 'client-request',
+      rpcId: `relay-slim-${Date.now()}`,
+      method: 'session.history',
+      payload: {
+        sessionId: body.sessionId,
+        ...(body.beforeSeq !== undefined ? { beforeSeq: body.beforeSeq } : {}),
+        maxMessages: body.maxMessages ?? 60,
+      },
+    };
+    const upstream = await fetch(`http://${targetAuthority}/api/session.history`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', host: targetAuthority },
+      body: JSON.stringify(envelope),
+    });
+    const text = await upstream.text();
+    if (upstream.status !== 200) {
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(text);
+      return;
+    }
+    const decoded = JSON.parse(text);
+    const value = decoded?.result?.ok ? decoded.result.value : null;
+    if (!value || !Array.isArray(value.events)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(text);
+      return;
+    }
+    const slimEvents = [];
+    for (const entry of value.events) {
+      const event = entry?.event;
+      if (!event || event.type === 'assistant/chunk') continue;
+      // replayState 是宿主重放内部状态（可含完整请求体），客户端 fold 用不到。
+      const message = event.data?.message;
+      if (message?.source?.replayState) delete message.source.replayState;
+      slimEvents.push(entry);
+    }
+    value.events = slimEvents;
+    value.slim = true;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(value));
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `slim history failed: ${err.message}` }));
+  }
+}
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/__relay/history.slim' && req.method === 'POST') {
+    handleSlimHistory(req, res);
+    return;
+  }
   const upstream = http.request(
     {
       host: targetHost,

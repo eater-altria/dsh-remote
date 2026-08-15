@@ -151,9 +151,54 @@ class HomePage extends ConsumerWidget {
   Future<void> _createSession(BuildContext context, WidgetRef ref, {String? workspaceId}) async {
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
+    // 有 preset 目录时让主人选择；'default' = 默认组合，null = 取消创建。
+    String? preset;
+    var cancelled = false;
+    try {
+      final presets = await ref.read(agentPresetListProvider.future);
+      if (presets.length > 1 && context.mounted) {
+        final chosen = await showModalBottomSheet<String>(
+          context: context,
+          showDragHandle: true,
+          builder: (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text('选择 Agent 组合', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+                for (final p in presets)
+                  ListTile(
+                    dense: true,
+                    leading: Icon(p.trust == 'system' ? Icons.verified_outlined : Icons.person_outline,
+                        size: 18),
+                    title: Text(p.name ?? p.id),
+                    subtitle: p.description != null
+                        ? Text(p.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
+                        : null,
+                    trailing: p.isDefault ? const Text('默认') : null,
+                    enabled: p.brokenReason == null,
+                    onTap: () => Navigator.pop(context, p.isDefault ? 'default' : p.id),
+                  ),
+              ],
+            ),
+          ),
+        );
+        if (chosen == null) {
+          cancelled = true;
+        } else if (chosen != 'default') {
+          preset = chosen;
+        }
+      }
+    } catch (_) {
+      // preset 目录失败不阻塞创建
+    }
+    if (cancelled) return;
     try {
       final value = await connection.api.rpc('session.create', {
         'workspaceId': ?workspaceId,
+        'agentPreset': ?preset,
       });
       final sessionId = (value as Map)['sessionId'] as String?;
       if (sessionId != null && context.mounted) {

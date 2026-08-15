@@ -134,6 +134,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           PopupMenuButton<String>(
             onSelected: _onSessionMenu,
             itemBuilder: (context) => const [
+              PopupMenuItem(value: 'permission', child: Text('权限模式')),
               PopupMenuItem(value: 'subagents', child: Text('子代理')),
               PopupMenuItem(value: 'rename', child: Text('重命名')),
               PopupMenuItem(value: 'fork', child: Text('分叉会话')),
@@ -146,6 +147,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       body: Column(
         children: [
           if (chat.goal != null && chat.goal!.exists) _GoalBanner(sessionId: widget.sessionId, goal: chat.goal!),
+          _PlanBanner(projections: chat.projections),
+          _TodoBar(projections: chat.projections),
           Expanded(child: _buildList(chat, notifier)),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
             _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
@@ -390,6 +393,39 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<void> _onSessionMenu(String value) async {
     switch (value) {
+      case 'permission':
+        final permissions = ref.read(chatProvider(widget.sessionId)).projections['permissions'];
+        if (permissions is! Map<String, dynamic>) return;
+        final options = (permissions['options'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+        final current = permissions['currentValue'] as String?;
+        if (options.isEmpty || !mounted) return;
+        final chosen = await showModalBottomSheet<String>(
+          context: context,
+          showDragHandle: true,
+          builder: (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final option in options)
+                  ListTile(
+                    title: Text('${option['name'] ?? option['value']}'),
+                    subtitle: option['description'] != null ? Text('${option['description']}') : null,
+                    trailing: option['value'] == current ? const Icon(Icons.check) : null,
+                    onTap: () => Navigator.pop(context, '${option['value']}'),
+                  ),
+              ],
+            ),
+          ),
+        );
+        if (chosen != null && chosen != current) {
+          try {
+            await executeCommand(ref, widget.sessionId, '/permission $chosen');
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换权限模式失败: $e')));
+            }
+          }
+        }
       case 'subagents':
         await _showSubagentsSheet();
       case 'export':
@@ -959,17 +995,26 @@ class _SkillSuggestions extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final skills = ref.watch(skillListProvider(sessionId)).value ?? const <SkillEntry>[];
+    final commands = ref.watch(commandListProvider(sessionId)).value ?? const <CommandEntry>[];
     return ValueListenableBuilder<TextEditingValue>(
       valueListenable: controller,
       builder: (context, value, _) {
         var text = value.text;
         if (text.startsWith('／')) text = '/${text.substring(1)}';
-        if (!text.startsWith('/') || text.contains(' ') || text.length < 2) {
+        if (!text.startsWith('/') || text.contains(' ') || text.isEmpty) {
           return const SizedBox.shrink();
         }
         final query = text.substring(1).toLowerCase();
-        final matches = skills.where((s) => s.name.toLowerCase().contains(query)).take(6).toList();
-        if (matches.isEmpty) return const SizedBox.shrink();
+        // 技能与斜杠命令合并成一个面板。
+        final entries = <({String name, String description, IconData icon})>[
+          for (final c in commands)
+            if (query.isEmpty || c.name.toLowerCase().contains(query))
+              (name: c.name, description: c.description, icon: Icons.bolt),
+          for (final sk in skills)
+            if (query.isEmpty || sk.name.toLowerCase().contains(query))
+              (name: sk.name, description: sk.description, icon: Icons.auto_awesome),
+        ].take(8).toList();
+        if (entries.isEmpty) return const SizedBox.shrink();
         final theme = Theme.of(context);
         return Container(
           constraints: const BoxConstraints(maxHeight: 200),
@@ -982,24 +1027,32 @@ class _SkillSuggestions extends ConsumerWidget {
           child: ListView.builder(
             shrinkWrap: true,
             padding: EdgeInsets.zero,
-            itemCount: matches.length,
+            itemCount: entries.length,
             itemBuilder: (context, i) {
-              final skill = matches[i];
+              final entry = entries[i];
               return InkWell(
                 onTap: () {
-                  controller.text = '/${skill.name} ';
+                  controller.text = '/${entry.name} ';
                   controller.selection = TextSelection.collapsed(offset: controller.text.length);
                 },
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Row(
                     children: [
-                      Text('/${skill.name}',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                              color: theme.colorScheme.primary, fontWeight: FontWeight.w600)),
-                      Text(skill.description,
-                          maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+                      Icon(entry.icon, size: 14, color: theme.colorScheme.outline),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('/${entry.name}',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.primary, fontWeight: FontWeight.w600)),
+                            Text(entry.description,
+                                maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1274,6 +1327,124 @@ class _RatingButton extends StatelessWidget {
       style: OutlinedButton.styleFrom(
         side: BorderSide(color: selected ? color : Theme.of(context).colorScheme.outlineVariant),
         backgroundColor: selected ? color.withValues(alpha: 0.12) : null,
+      ),
+    );
+  }
+}
+
+/// 待办条：`todos` 投影（todo/write 的最新整表，turn/start 清空）。
+/// 折叠显示进度，点击展开每项状态。
+class _TodoBar extends StatefulWidget {
+  const _TodoBar({required this.projections});
+
+  final Map<String, dynamic> projections;
+
+  @override
+  State<_TodoBar> createState() => _TodoBarState();
+}
+
+class _TodoBarState extends State<_TodoBar> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = widget.projections['todos'];
+    if (raw is! List) return const SizedBox.shrink();
+    final todos = raw.whereType<Map<String, dynamic>>().toList();
+    if (todos.isEmpty) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final done = todos.where((t) => t['status'] == 'completed').length;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.task_alt, size: 16, color: theme.colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('任务清单 $done/${todos.length}', style: theme.textTheme.bodySmall)),
+                  Icon(_expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 16, color: theme.colorScheme.outline),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded)
+            for (final todo in todos)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      switch (todo['status']) {
+                        'completed' => Icons.check_circle,
+                        'in_progress' => Icons.timelapse,
+                        _ => Icons.radio_button_unchecked,
+                      },
+                      size: 14,
+                      color: switch (todo['status']) {
+                        'completed' => theme.colorScheme.tertiary,
+                        'in_progress' => theme.colorScheme.secondary,
+                        _ => theme.colorScheme.outline,
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('${todo['content'] ?? ''}',
+                          maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+                    ),
+                  ],
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 计划模式横幅：`plan` 投影 {active, pending}。
+class _PlanBanner extends StatelessWidget {
+  const _PlanBanner({required this.projections});
+
+  final Map<String, dynamic> projections;
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = projections['plan'];
+    if (raw is! Map<String, dynamic>) return const SizedBox.shrink();
+    final active = raw['active'] == true;
+    final pending = raw['pending'] == true;
+    if (!active && !pending) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primaryContainer,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.assignment_outlined, size: 16, color: theme.colorScheme.onPrimaryContainer),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              pending ? '计划模式（等待生效）' : '计划模式：先出方案再动手',
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onPrimaryContainer),
+            ),
+          ),
+        ],
       ),
     );
   }

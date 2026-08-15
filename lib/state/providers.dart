@@ -4,7 +4,9 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -215,6 +217,7 @@ class ChatState {
     this.sending = false,
     this.scrollSignal = 0,
     this.goal,
+    this.projections = const {},
   });
 
   final String sessionId;
@@ -233,6 +236,9 @@ class ChatState {
   /// `goal` 投影：进行中的目标（无目标时为 null）。
   final GoalView? goal;
 
+  /// 全部会话投影的原始值（todos / plan / permissions / imageLimits …）。
+  final Map<String, dynamic> projections;
+
   List<ChatItem> get items => fold?.items ?? const [];
   bool get running => fold?.running ?? false;
   String? get title => fold?.title;
@@ -248,6 +254,7 @@ class ChatState {
     bool? sending,
     int? scrollSignal,
     GoalView? Function()? goal,
+    Map<String, dynamic>? projections,
   }) =>
       ChatState(
         sessionId: sessionId,
@@ -261,6 +268,7 @@ class ChatState {
         sending: sending ?? this.sending,
         scrollSignal: scrollSignal ?? this.scrollSignal,
         goal: goal != null ? goal() : this.goal,
+        projections: projections ?? this.projections,
       );
 }
 
@@ -319,60 +327,71 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     return chat;
   }
 
+  /// 拉取原始历史页：优先走 relay 的 slim 端点（剥掉 chunk/replayState，
+  /// 9MB→1.5MB），不支持时回退标准 session.history。
+  Future<String> _fetchHistoryRaw({int? beforeSeq}) async {
+    final connection = ref.read(connectionProvider);
+    if (connection == null) throw StateError('未连接');
+    final payload = {
+      'sessionId': arg,
+      'beforeSeq': ?beforeSeq,
+      'maxMessages': 60,
+    };
+    try {
+      final response = await http
+          .post(
+            Uri.parse('${connection.baseUrl}/__relay/history.slim'),
+            headers: {'content-type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 30));
+      if (response.statusCode == 200) {
+        final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        if (decoded is Map<String, dynamic> && decoded.containsKey('events')) {
+          return utf8.decode(response.bodyBytes);
+        }
+      }
+    } catch (_) {
+      // relay 不支持 slim → 回退标准路径
+    }
+    final value = await connection.api.rpc('session.history', payload);
+    return jsonEncode(value);
+  }
+
   Future<void> _loadHistory({int? beforeSeq}) async {
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     final generation = ++_historyGeneration;
     try {
-      final value = await connection.api.rpc('session.history', {
-        'sessionId': arg,
-        'beforeSeq': ?beforeSeq,
-        'maxMessages': 200,
-      });
+      final raw = await _fetchHistoryRaw(beforeSeq: beforeSeq);
       if (generation != _historyGeneration) return;
-      final map = (value as Map).cast<String, dynamic>();
-      final events = (map['events'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
-      // Tail page (re)loads rebuild the fold from scratch; older pages prepend.
-      final fold = beforeSeq == null ? ChatFold() : (state.fold ?? ChatFold());
+      // 解码 + 折叠放后台 isolate：数 MB 的 JSON 同步解析会冻结 UI 线程。
+      final result = await compute(
+        parseAndFoldHistory,
+        HistoryFoldTask(body: raw, isTail: beforeSeq == null),
+      );
+      if (generation != _historyGeneration) return;
+      final fold = result.fold;
       if (beforeSeq != null) {
-        final older = ChatFold();
-        for (final entry in events) {
-          final event = entry['event'];
-          if (event is Map<String, dynamic>) {
-            older.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
-          }
-        }
-        fold.items = [...older.items, ...fold.items];
-      } else {
-        for (final entry in events) {
-          final event = entry['event'];
-          if (event is Map<String, dynamic>) {
-            fold.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
-          }
-        }
+        // 更早的页面前插到现有列表。
+        final current = state.fold ?? ChatFold();
+        current.items = [...fold.items, ...current.items];
+        state = state.copyWith(fold: current, hasMore: result.hasMore, historyError: () => null);
+        return;
       }
-      // Title also rides the projections block on the tail page.
-      final projections = map['projections'];
       GoalView? goal = state.goal;
-      if (projections is Map<String, dynamic>) {
-        final values = projections['values'];
-        if (values is Map<String, dynamic>) {
-          final t = values['title'];
-          if (t is String && t.isNotEmpty) fold.title = t;
-          if (values.containsKey('goal')) {
-            final g = GoalView.fromProjection(values['goal']);
-            goal = g.exists ? g : null;
-          }
-        }
+      if (result.projections.isNotEmpty || result.goalValue != null) {
+        final g = GoalView.fromProjection(result.projections['goal']);
+        goal = g.exists ? g : null;
       }
       state = state.copyWith(
         fold: fold,
         loadingHistory: false,
-        hasMore: map['hasMore'] == true,
+        hasMore: result.hasMore,
         historyError: () => null,
-        // 尾部页加载完成 → 通知 UI 跳到底部。
-        scrollSignal: beforeSeq == null ? state.scrollSignal + 1 : null,
-        goal: beforeSeq == null ? () => goal : null,
+        scrollSignal: state.scrollSignal + 1,
+        goal: () => goal,
+        projections: result.projections.isNotEmpty ? result.projections : null,
       );
     } catch (e) {
       if (generation != _historyGeneration) return;
@@ -486,7 +505,16 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
           }
         } else if (payload['key'] == 'goal') {
           final g = GoalView.fromProjection(payload['value']);
-          state = state.copyWith(goal: () => g.exists ? g : null);
+          final projections = Map<String, dynamic>.from(state.projections);
+          projections['goal'] = payload['value'];
+          state = state.copyWith(goal: () => g.exists ? g : null, projections: projections);
+        } else {
+          final key = payload['key'] as String?;
+          if (key != null) {
+            final projections = Map<String, dynamic>.from(state.projections);
+            projections[key] = payload['value'];
+            state = state.copyWith(projections: projections);
+          }
         }
       default:
         break;
@@ -767,3 +795,75 @@ Future<void> putFeedback(WidgetRef ref, String sessionId, String messageId, Stri
   });
   ref.invalidate(messageFeedbackProvider(sessionId));
 }
+
+// ---------------------------------------------------------------------------
+// 斜杠命令目录（commands/list Remote 端点）
+// ---------------------------------------------------------------------------
+
+class CommandEntry {
+  CommandEntry({required this.name, required this.description, this.hint});
+
+  final String name;
+  final String description;
+  final String? hint;
+
+  factory CommandEntry.fromJson(Map<String, dynamic> json) => CommandEntry(
+        name: json['name'] as String? ?? '',
+        description: json['description'] as String? ?? '',
+        hint: (json['input'] as Map?)?['hint'] as String?,
+      );
+}
+
+final commandListProvider = FutureProvider.family<List<CommandEntry>, String>((ref, sessionId) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) return const [];
+  final value = await connection.api.remote('commands/list', {'agentId': sessionId});
+  return (value as List?)?.whereType<Map<String, dynamic>>().map(CommandEntry.fromJson).toList() ?? const [];
+});
+
+/// 执行一条斜杠命令（host 侧执行；结果经 command/run 帧回来）。
+Future<void> executeCommand(WidgetRef ref, String sessionId, String line) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return;
+  await connection.api.remote('commands/execute', {'agentId': sessionId, 'line': line});
+}
+
+// ---------------------------------------------------------------------------
+// Agent preset 目录（agentPreset.list）
+// ---------------------------------------------------------------------------
+
+class AgentPresetEntry {
+  AgentPresetEntry({
+    required this.id,
+    required this.isDefault,
+    required this.trust,
+    this.name,
+    this.description,
+    this.brokenReason,
+  });
+
+  final String id;
+  final bool isDefault;
+  final String trust; // system | user
+  final String? name;
+  final String? description;
+  final String? brokenReason;
+
+  factory AgentPresetEntry.fromJson(Map<String, dynamic> json) => AgentPresetEntry(
+        id: json['id'] as String? ?? '',
+        isDefault: json['isDefault'] as bool? ?? false,
+        trust: json['trust'] as String? ?? '',
+        name: json['name'] as String?,
+        description: json['description'] as String?,
+        brokenReason: json['broken'] as String?,
+      );
+}
+
+final agentPresetListProvider = FutureProvider<List<AgentPresetEntry>>((ref) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) return const [];
+  final value = await connection.api.rpc('agentPreset.list');
+  final map = (value as Map).cast<String, dynamic>();
+  final rows = map['presets'];
+  return (rows as List?)?.whereType<Map<String, dynamic>>().map(AgentPresetEntry.fromJson).toList() ?? const [];
+});

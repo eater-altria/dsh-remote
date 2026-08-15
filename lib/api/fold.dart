@@ -1,3 +1,7 @@
+library;
+
+import 'dart:convert';
+
 /// Session-event fold: turns the durable event log (`session.history`) and
 /// live mux frames (`session/event`) into a renderable chat item list.
 ///
@@ -9,7 +13,6 @@
 /// - `turn/start` / `turn/end` -> running flag
 /// - `session/title` -> title
 /// - `compaction/summary`, `command/run` -> system notices
-library;
 
 /// One UI-classified assistant content block (mirrors the web client's
 /// `toAssistantBlocks` classification).
@@ -372,4 +375,62 @@ String? _blocksText(dynamic content) {
     return text.isEmpty ? null : text;
   }
   return content == null ? null : '$content';
+}
+
+/// 历史页解析+折叠的隔离任务输入/输出（后台 isolate 执行，避免 UI 线程
+/// 同步解码数 MB JSON 造成卡顿）。
+class HistoryFoldTask {
+  const HistoryFoldTask({required this.body, required this.isTail});
+
+  /// session.history 的 value JSON 字符串（或 relay slim 端点响应体）。
+  final String body;
+  final bool isTail;
+}
+
+class HistoryFoldResult {
+  const HistoryFoldResult({
+    required this.fold,
+    required this.hasMore,
+    this.goalValue,
+    this.projections = const {},
+  });
+
+  final ChatFold fold;
+  final bool hasMore;
+
+  /// `goal` 投影的原始 JSON 值（仅尾部页）。
+  final dynamic goalValue;
+
+  /// 尾部页投影基线的全部原始值（todos/plan/permissions/imageLimits 等）。
+  final Map<String, dynamic> projections;
+}
+
+/// 在后台 isolate 中运行：jsonDecode + 全量 fold。
+HistoryFoldResult parseAndFoldHistory(HistoryFoldTask task) {
+  final decoded = jsonDecode(task.body);
+  final map = decoded is Map<String, dynamic> ? decoded : const <String, dynamic>{};
+  final fold = ChatFold();
+  final events = (map['events'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+  for (final entry in events) {
+    final event = entry['event'];
+    if (event is Map<String, dynamic>) {
+      fold.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
+    }
+  }
+  dynamic goalValue;
+  var projections = const <String, dynamic>{};
+  if (task.isTail) {
+    final block = map['projections'];
+    if (block is Map<String, dynamic>) {
+      final values = block['values'];
+      if (values is Map<String, dynamic>) {
+        projections = values;
+        final t = values['title'];
+        if (t is String && t.isNotEmpty) fold.title = t;
+        goalValue = values['goal'];
+      }
+    }
+  }
+  return HistoryFoldResult(
+      fold: fold, hasMore: map['hasMore'] == true, goalValue: goalValue, projections: projections);
 }
