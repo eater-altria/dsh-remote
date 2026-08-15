@@ -144,7 +144,13 @@ class ChatFold {
   }
 
   /// Apply one raw session event (`{type, seq, time, data, ...}`).
-  void applyEvent(Map<String, dynamic> event) {
+  ///
+  /// - [live]: true for mux-stream frames. History pages skip `assistant/chunk`
+  ///   entirely (a 30-message page can carry 24k+ chunk events; the final
+  ///   `assistant/message` already holds the full content).
+  /// - [view]: the host-computed ToolEventView (`{for, view: {card, ...}}`)
+  ///   attached to history entries / mux frames.
+  void applyEvent(Map<String, dynamic> event, {bool live = false, Map<String, dynamic>? view}) {
     final type = event['type'] as String? ?? '';
     final seq = (event['seq'] as num?)?.toInt() ?? 0;
     final data = event['data'];
@@ -153,9 +159,9 @@ class ChatFold {
     switch (type) {
       case 'user/message':
         if (!isAppend(event)) return;
-        final message = map['message'];
-        if (message is! Map<String, dynamic>) return;
-        final content = message['content'];
+        // 真实结构：data 本身就是 message（{role, content, source, id}）。
+        final content =
+            map['content'] ?? (map['message'] is Map<String, dynamic> ? (map['message'] as Map)['content'] : null);
         if (content is! List) return;
         final texts = <String>[];
         var images = 0;
@@ -169,6 +175,7 @@ class ChatFold {
         if (text.isEmpty && images == 0) return;
         items.add(UserItem(seq: seq, text: text, imageCount: images));
       case 'assistant/chunk':
+        if (!live) return; // 历史折叠跳过流式中间态（性能关键路径）
         _applyChunk(map['chunk']);
       case 'assistant/message':
         if (!isAppend(event)) return;
@@ -179,33 +186,50 @@ class ChatFold {
         final blocks = content
             .whereType<Map<String, dynamic>>()
             .map(classifyBlock)
-            .where((b) => b is! OtherBlock)
+            // 工具调用块由独立的 tool/call → ToolItem 卡片呈现，消息内不再重复渲染。
+            .where((b) => b is! OtherBlock && b is! ToolCallBlock)
             .toList();
         _finalizePartial();
-        items.add(AssistantItem(seq: seq, blocks: blocks));
-        for (var i = 0; i < blocks.length; i++) {
-          final b = blocks[i];
-          if (b is ToolCallBlock && b.callId.isNotEmpty) {
-            // Tool blocks embedded in the final message pair with tool items.
-            _toolIndex.putIfAbsent(b.callId, () => -1);
-          }
-        }
+        if (blocks.isNotEmpty) items.add(AssistantItem(seq: seq, blocks: blocks));
       case 'tool/call':
         final callId = '${map['callId'] ?? map['id'] ?? ''}';
         final name = '${map['name'] ?? map['tool'] ?? 'tool'}';
         final args = map['arguments'];
+        // 宿主算好的卡片视图提供人类可读标题（如终端命令本身）。
+        final viewBody = view?['view'];
+        final title = viewBody is Map<String, dynamic> ? viewBody['title'] as String? : null;
         _finalizePartial();
         _toolIndex[callId] = items.length;
         items.add(ToolItem(
           seq: seq,
           callId: callId,
-          name: name,
+          name: title ?? name,
           argsRaw: args is String ? args : (args == null ? '' : '$args'),
         ));
       case 'tool/result':
-        final callId = '${map['callId'] ?? map['id'] ?? ''}';
-        final preview = _resultPreview(map);
-        final isError = map['isError'] == true || map['error'] != null;
+        // 真实结构：data.message.content = [{type:'tool-result', toolCallId, content:[...]}]
+        String callId = '${map['callId'] ?? map['id'] ?? ''}';
+        String? preview;
+        var isError = map['isError'] == true || map['error'] != null;
+        final message = map['message'];
+        final resultContent = message is Map<String, dynamic> ? message['content'] : map['content'];
+        if (resultContent is List) {
+          for (final block in resultContent.whereType<Map<String, dynamic>>()) {
+            if (block['type'] == 'tool-result') {
+              callId = '${block['toolCallId'] ?? callId}';
+              isError = isError || block['isError'] == true;
+              preview ??= _blocksText(block['content']);
+            } else if (block['type'] == 'text') {
+              preview ??= block['text'] as String?;
+            }
+          }
+        }
+        // 宿主卡片视图（terminal 卡带 output）是更好的预览来源。
+        final viewBody = view?['view'];
+        if (viewBody is Map<String, dynamic> && viewBody['output'] is String) {
+          preview = viewBody['output'] as String;
+        }
+        if (preview != null && preview.length > 500) preview = '${preview.substring(0, 500)}…';
         final idx = _toolIndex[callId];
         if (idx != null && idx >= 0 && idx < items.length) {
           final item = items[idx];
@@ -313,23 +337,15 @@ class ChatFold {
   }
 }
 
-String? _resultPreview(Map<String, dynamic> map) {
-  final content = map['content'] ?? map['result'] ?? map['output'];
-  String text;
-  if (content is String) {
-    text = content;
-  } else if (content is List) {
-    text = content
+String? _blocksText(dynamic content) {
+  if (content is String) return content;
+  if (content is List) {
+    final text = content
         .whereType<Map<String, dynamic>>()
         .where((b) => b['type'] == 'text')
         .map((b) => b['text'] as String? ?? '')
         .join('\n');
-  } else if (content != null) {
-    text = '$content';
-  } else {
-    return null;
+    return text.isEmpty ? null : text;
   }
-  const max = 500;
-  if (text.length > max) return '${text.substring(0, max)}…';
-  return text;
+  return content == null ? null : '$content';
 }

@@ -74,24 +74,63 @@ void main() {
     expect((assistant.blocks.first as TextBlock).text, '你好呀');
   });
 
-  test('fold pairs tool results with calls', () {
+  test('fold pairs tool results with calls (real wire shapes)', () {
     final fold = ChatFold();
     fold.applyEvent({
       'type': 'tool/call',
       'seq': 1,
       'time': 0,
-      'data': {'callId': 'c1', 'name': 'bash', 'arguments': '{"command":"ls"}'},
+      'data': {'callId': 'tool_1', 'name': 'bash', 'arguments': '{"command":"ls"}'},
+    }, view: {
+      'for': 'call',
+      'view': {'card': 'terminal', 'title': 'ls'},
     });
     fold.applyEvent({
       'type': 'tool/result',
       'seq': 2,
       'time': 0,
-      'data': {'callId': 'c1', 'content': 'ok'},
+      'data': {
+        'message': {
+          'source': {'kind': 'tool', 'callId': 'tool_1'},
+          'content': [
+            {
+              'type': 'tool-result',
+              'toolCallId': 'tool_1',
+              'content': [
+                {'type': 'text', 'text': 'ok'}
+              ]
+            }
+          ]
+        }
+      },
     });
     expect(fold.items, hasLength(1));
     final tool = fold.items.first as ToolItem;
-    expect(tool.name, 'bash');
+    expect(tool.name, 'ls'); // 宿主卡片视图的 title 优先
     expect(tool.finished, isTrue);
     expect(tool.resultPreview, 'ok');
+  });
+
+  test('history mode skips assistant/chunk events', () {
+    final fold = ChatFold();
+    fold.applyEvent({
+      'type': 'assistant/chunk',
+      'seq': 1,
+      'time': 0,
+      'data': {
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '不应出现'}
+      },
+    });
+    expect(fold.items, isEmpty);
+    // live 模式才会折叠 chunk
+    fold.applyEvent({
+      'type': 'assistant/chunk',
+      'seq': 2,
+      'time': 0,
+      'data': {
+        'chunk': {'type': 'text-delta', 'index': 0, 'text': '流式'}
+      },
+    }, live: true);
+    expect(fold.items, hasLength(1));
   });
 }

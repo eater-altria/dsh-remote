@@ -21,7 +21,16 @@ class ChatPage extends ConsumerStatefulWidget {
 class _ChatPageState extends ConsumerState<ChatPage> {
   final _composer = TextEditingController();
   final _scroll = ScrollController();
-  int _lastItemCount = 0;
+
+  /// 贴底状态：用户在底部附近时，新内容到达自动跟随；往上翻则停止跟随。
+  bool _stickToBottom = true;
+  int _lastContentSignature = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
 
   @override
   void dispose() {
@@ -30,25 +39,64 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     super.dispose();
   }
 
-  void _maybeScrollToEnd(int count) {
-    if (count == _lastItemCount) return;
-    _lastItemCount = count;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
+    _stickToBottom = position.pixels >= position.maxScrollExtent - 120;
+  }
+
+  /// 内容签名：条目数 + 最后一条的长度（流式增长时条数不变但内容在变）。
+  int _contentSignature(ChatState chat) {
+    final items = chat.items;
+    if (items.isEmpty) return 0;
+    final last = items.last;
+    final lastSize = switch (last) {
+      AssistantItem() => last.blocks.fold<int>(0, (sum, b) => sum + switch (b) {
+            TextBlock() => b.text.length,
+            ReasoningBlock() => b.text.length,
+            ToolCallBlock() => b.argsRaw.length,
+            OtherBlock() => 0,
+          }),
+      UserItem() => last.text.length,
+      ToolItem() => last.resultPreview?.length ?? 0,
+      NoticeItem() => last.text.length,
+    };
+    return items.length * 1000000 + lastSize;
+  }
+
+  void _maybeScrollToEnd(ChatState chat) {
+    final signature = _contentSignature(chat);
+    if (signature == _lastContentSignature) return;
+    _lastContentSignature = signature;
+    if (!_stickToBottom) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd(animate: true));
+  }
+
+  void _jumpToEnd({bool animate = false}) {
+    if (!_scroll.hasClients) return;
+    final target = _scroll.position.maxScrollExtent;
+    if (animate) {
+      _scroll.animateTo(target, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    } else {
+      _scroll.jumpTo(target);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final chat = ref.watch(chatProvider(widget.sessionId));
     final notifier = ref.read(chatProvider(widget.sessionId).notifier);
-    _maybeScrollToEnd(chat.items.length);
+    _maybeScrollToEnd(chat);
+
+    // 尾部历史页加载完成 → 直接跳到底部（不等动画）。
+    ref.listen(chatProvider(widget.sessionId).select((s) => s.scrollSignal), (_, _) {
+      _stickToBottom = true;
+      // 两帧后列表已完成布局，maxScrollExtent 才是终值。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _jumpToEnd();
+        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());
+      });
+    });
 
     // Surface pending interactions.
     ref.listen(chatProvider(widget.sessionId).select((s) => s.pendingQuestion), (_, next) {

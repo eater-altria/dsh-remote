@@ -208,6 +208,7 @@ class ChatState {
     this.pendingApproval,
     this.queue = const [],
     this.sending = false,
+    this.scrollSignal = 0,
   });
 
   final String sessionId;
@@ -219,6 +220,9 @@ class ChatState {
   final PendingApproval? pendingApproval;
   final List<QueueItem> queue;
   final bool sending;
+
+  /// 单调递增信号：尾部历史页加载完成时 +1，UI 据此跳到底部。
+  final int scrollSignal;
 
   List<ChatItem> get items => fold?.items ?? const [];
   bool get running => fold?.running ?? false;
@@ -233,6 +237,7 @@ class ChatState {
     PendingApproval? Function()? pendingApproval,
     List<QueueItem>? queue,
     bool? sending,
+    int? scrollSignal,
   }) =>
       ChatState(
         sessionId: sessionId,
@@ -244,6 +249,7 @@ class ChatState {
         pendingApproval: pendingApproval != null ? pendingApproval() : this.pendingApproval,
         queue: queue ?? this.queue,
         sending: sending ?? this.sending,
+        scrollSignal: scrollSignal ?? this.scrollSignal,
       );
 }
 
@@ -251,6 +257,20 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
   StreamSubscription? _muxSub;
   void Function()? _statusListener;
   int _historyGeneration = 0;
+  final List<Map<String, dynamic>> _pendingChunks = [];
+  Timer? _chunkFlushTimer;
+
+  void _flushChunks() {
+    _chunkFlushTimer?.cancel();
+    _chunkFlushTimer = null;
+    if (_pendingChunks.isEmpty) return;
+    final fold = state.fold ?? ChatFold();
+    for (final event in _pendingChunks) {
+      fold.applyEvent(event, live: true);
+    }
+    _pendingChunks.clear();
+    state = state.copyWith(fold: fold);
+  }
 
   @override
   ChatState build(String arg) {
@@ -274,6 +294,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     connection.addListener(listener);
     ref.onDispose(() {
       _muxSub?.cancel();
+      _chunkFlushTimer?.cancel();
       if (_statusListener != null) connection.removeListener(_statusListener!);
     });
     if (connection.status == ConnStatus.connected) {
@@ -301,13 +322,17 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
         final older = ChatFold();
         for (final entry in events) {
           final event = entry['event'];
-          if (event is Map<String, dynamic>) older.applyEvent(event);
+          if (event is Map<String, dynamic>) {
+            older.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
+          }
         }
         fold.items = [...older.items, ...fold.items];
       } else {
         for (final entry in events) {
           final event = entry['event'];
-          if (event is Map<String, dynamic>) fold.applyEvent(event);
+          if (event is Map<String, dynamic>) {
+            fold.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
+          }
         }
       }
       // Title also rides the projections block on the tail page.
@@ -324,6 +349,8 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
         loadingHistory: false,
         hasMore: map['hasMore'] == true,
         historyError: () => null,
+        // 尾部页加载完成 → 通知 UI 跳到底部。
+        scrollSignal: beforeSeq == null ? state.scrollSignal + 1 : null,
       );
     } catch (e) {
       if (generation != _historyGeneration) return;
@@ -348,8 +375,16 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     switch (type) {
       case 'session/event':
         final event = payload['event'];
-        if (event is Map<String, dynamic>) {
-          fold.applyEvent(event);
+        if (event is! Map<String, dynamic>) return;
+        if (event['type'] == 'assistant/chunk') {
+          // 流式 chunk 批量合并：40ms 内到达的 chunk 一次应用、一次重建，
+          // 避免逐 token setState 导致的 UI 线程风暴。
+          _pendingChunks.add(event);
+          _chunkFlushTimer ??= Timer(const Duration(milliseconds: 40), _flushChunks);
+        } else {
+          // 非 chunk 事件先冲刷一次积压 chunk，保证应用顺序正确。
+          _flushChunks();
+          fold.applyEvent(event, live: true, view: (payload['view'] as Map?)?.cast<String, dynamic>());
           state = state.copyWith(fold: fold);
         }
       case 'question/requested':
