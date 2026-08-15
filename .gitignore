@@ -47,3 +47,7 @@ app.*.map.json
 # release signing
 android/key.properties
 android/keystore/
+
+# Node dependencies (relay/)
+node_modules/
+relay/node_modules/
