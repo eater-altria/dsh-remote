@@ -65,6 +65,10 @@ class DshApi {
     }
   }
 
+  /// Typert Remote endpoint: POST `/api/<namespace>/<method>` with named args.
+  Future<dynamic> remote(String endpoint, [Map<String, dynamic> args = const {}]) =>
+      rpc(endpoint, {'args': args});
+
   void dispose() => _http.close();
 }
 

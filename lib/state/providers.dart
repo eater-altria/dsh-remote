@@ -3,6 +3,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -56,6 +58,9 @@ String normalizeBaseUrl(String input) {
 }
 
 final serverProfileProvider = NotifierProvider<ServerProfileNotifier, String?>(ServerProfileNotifier.new);
+
+/// 当前聊天页的 sessionId（ProviderScope override 注入，供深层图片/反馈组件读取）。
+final currentSessionIdProvider = Provider<String>((ref) => throw UnimplementedError('未注入 sessionId'));
 
 /// Factory for one-shot low-level API handles against an arbitrary base URL
 /// (used by the setup probe before a profile exists).
@@ -503,17 +508,27 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
     await connection.api.rpc('goal.$verb', payload);
   }
 
-  /// Send a user prompt (queued behind an active turn).
-  Future<void> sendPrompt(String text) async {
+  /// Send a user prompt (queued behind an active turn), with optional images.
+  ///
+  /// [images] 是 `{bytes: Uint8List, mediaType: String, name: String}` 列表，
+  /// 按 promptContentPart 的 image 分支 base64 编码上送。
+  Future<void> sendPrompt(String text, {List<Map<String, Object>> images = const []}) async {
     final connection = ref.read(connectionProvider);
-    if (connection == null || text.trim().isEmpty) return;
+    if (connection == null || (text.trim().isEmpty && images.isEmpty)) return;
     state = state.copyWith(sending: true);
     try {
       await connection.api.rpc('session.prompt', {
         'sessionId': arg,
         'mode': 'queue',
         'content': [
-          {'type': 'text', 'text': text},
+          if (text.trim().isNotEmpty) {'type': 'text', 'text': text},
+          for (final image in images)
+            {
+              'type': 'image',
+              'mediaType': image['mediaType'],
+              'data': base64Encode(image['bytes'] as Uint8List),
+              'name': image['name'],
+            },
         ],
       });
     } finally {
@@ -718,3 +733,37 @@ final subagentListProvider =
           .toList() ??
       const [];
 });
+
+// ---------------------------------------------------------------------------
+// 消息反馈（messageFeedback Remote 端点）
+// ---------------------------------------------------------------------------
+
+/// messageId → rating ("positive" | "negative")。
+final messageFeedbackProvider =
+    FutureProvider.family<Map<String, String>, String>((ref, sessionId) async {
+  final connection = ref.watch(connectionProvider);
+  if (connection == null || connection.status != ConnStatus.connected) return const {};
+  final value = await connection.api.remote('messageFeedback/list', {
+    'request': {'sessionId': sessionId},
+  });
+  final map = (value as Map).cast<String, dynamic>();
+  final items = (map['items'] as List?)?.whereType<Map<String, dynamic>>() ?? const [];
+  return {for (final item in items) '${item['messageId']}': '${item['rating']}'};
+});
+
+/// 提交/更新反馈（ifVersion: null = 无条件写）。
+Future<void> putFeedback(WidgetRef ref, String sessionId, String messageId, String rating,
+    {String? note}) async {
+  final connection = ref.read(connectionProvider);
+  if (connection == null) return;
+  await connection.api.remote('messageFeedback/put', {
+    'request': {
+      'sessionId': sessionId,
+      'messageId': messageId,
+      'rating': rating,
+      'note': ?note,
+      'ifVersion': null,
+    },
+  });
+  ref.invalidate(messageFeedbackProvider(sessionId));
+}

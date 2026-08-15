@@ -49,7 +49,11 @@
 		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
-	</dict>
+		<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
+</dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
 </dict>
 			</array>
 			<key>NSAppTransportSecurity</key>
@@ -58,7 +62,11 @@
 		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
-	</dict>
+		<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
+</dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
 </dict>
 		<key>NSAppTransportSecurity</key>
 	<dict>
@@ -66,7 +74,11 @@
 		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
-	</dict>
+		<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
+</dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
 </dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
@@ -93,6 +105,10 @@
 		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
-	</dict>
+		<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
+</dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于在对话中发送图片附件</string>
 </dict>
 </plist>

@@ -34,6 +34,13 @@ class ToolCallBlock extends AssistantBlock {
   final String argsRaw;
 }
 
+class ImageBlock extends AssistantBlock {
+  const ImageBlock(this.attachment);
+
+  /// 持久图片引用：{ attachmentId, mediaType, bytes, width, height, name? }
+  final Map<String, dynamic> attachment;
+}
+
 class OtherBlock extends AssistantBlock {
   const OtherBlock(this.type);
   final String type;
@@ -51,6 +58,10 @@ AssistantBlock classifyBlock(Map<String, dynamic> block) {
         name: block['name'] as String? ?? '',
         argsRaw: block['arguments'] as String? ?? '',
       );
+    case 'image':
+      final attachment = block['attachment'];
+      if (attachment is Map<String, dynamic>) return ImageBlock(attachment);
+      return const OtherBlock('image');
     default:
       return OtherBlock('${block['type']}');
   }
@@ -74,20 +85,28 @@ sealed class ChatItem {
 }
 
 class UserItem extends ChatItem {
-  const UserItem({required super.seq, required this.text, this.imageCount = 0});
+  const UserItem({required super.seq, required this.text, this.images = const []});
   final String text;
-  final int imageCount;
+
+  /// 图片附件引用列表（ImageAttachmentRef 形状）。
+  final List<Map<String, dynamic>> images;
 }
 
 class AssistantItem extends ChatItem {
-  const AssistantItem({required super.seq, required this.blocks, this.streaming = false});
+  const AssistantItem({required super.seq, required this.blocks, this.streaming = false, this.messageId});
   final List<AssistantBlock> blocks;
 
   /// True while chunks are still arriving for this message.
   final bool streaming;
 
-  AssistantItem copyWith({List<AssistantBlock>? blocks, bool? streaming}) =>
-      AssistantItem(seq: seq, blocks: blocks ?? this.blocks, streaming: streaming ?? this.streaming);
+  /// 持久消息 id（assistant/message 的 data.message.id），消息反馈的目标。
+  final String? messageId;
+
+  AssistantItem copyWith({List<AssistantBlock>? blocks, bool? streaming, String? messageId}) => AssistantItem(
+      seq: seq,
+      blocks: blocks ?? this.blocks,
+      streaming: streaming ?? this.streaming,
+      messageId: messageId ?? this.messageId);
 }
 
 class ToolItem extends ChatItem {
@@ -164,16 +183,19 @@ class ChatFold {
             map['content'] ?? (map['message'] is Map<String, dynamic> ? (map['message'] as Map)['content'] : null);
         if (content is! List) return;
         final texts = <String>[];
-        var images = 0;
+        final images = <Map<String, dynamic>>[];
         for (final block in content) {
           if (block is Map<String, dynamic>) {
             if (block['type'] == 'text') texts.add(block['text'] as String? ?? '');
-            if (block['type'] == 'image') images++;
+            if (block['type'] == 'image') {
+              final attachment = block['attachment'];
+              if (attachment is Map<String, dynamic>) images.add(attachment);
+            }
           }
         }
         final text = texts.join('\n').trim();
-        if (text.isEmpty && images == 0) return;
-        items.add(UserItem(seq: seq, text: text, imageCount: images));
+        if (text.isEmpty && images.isEmpty) return;
+        items.add(UserItem(seq: seq, text: text, images: images));
       case 'assistant/chunk':
         if (!live) return; // 历史折叠跳过流式中间态（性能关键路径）
         _applyChunk(map['chunk']);
@@ -190,7 +212,9 @@ class ChatFold {
             .where((b) => b is! OtherBlock && b is! ToolCallBlock)
             .toList();
         _finalizePartial();
-        if (blocks.isNotEmpty) items.add(AssistantItem(seq: seq, blocks: blocks));
+        if (blocks.isNotEmpty) {
+          items.add(AssistantItem(seq: seq, blocks: blocks, messageId: message['id'] as String?));
+        }
       case 'tool/call':
         final callId = '${map['callId'] ?? map['id'] ?? ''}';
         final name = '${map['name'] ?? map['tool'] ?? 'tool'}';

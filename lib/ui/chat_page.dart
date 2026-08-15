@@ -4,6 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/fold.dart';
 import '../api/models.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:image_picker/image_picker.dart';
+
 import '../state/providers.dart';
 import 'theme.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -22,6 +27,7 @@ class ChatPage extends ConsumerStatefulWidget {
 class _ChatPageState extends ConsumerState<ChatPage> {
   final _composer = TextEditingController();
   final _scroll = ScrollController();
+  final List<XFile> _pendingImages = [];
 
   /// 贴底状态：用户在底部附近时，新内容到达自动跟随；往上翻则停止跟随。
   bool _stickToBottom = true;
@@ -56,6 +62,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             TextBlock() => b.text.length,
             ReasoningBlock() => b.text.length,
             ToolCallBlock() => b.argsRaw.length,
+            ImageBlock() => 1,
             OtherBlock() => 0,
           }),
       UserItem() => last.text.length,
@@ -107,9 +114,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       if (next != null) _showApprovalDialog(next);
     });
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(chat.title ?? '会话'),
+    return ProviderScope(
+      overrides: [currentSessionIdProvider.overrideWithValue(widget.sessionId)],
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(chat.title ?? '会话'),
         actions: [
           if (chat.running)
             IconButton(
@@ -139,9 +148,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           if (chat.goal != null && chat.goal!.exists) _GoalBanner(sessionId: widget.sessionId, goal: chat.goal!),
           Expanded(child: _buildList(chat, notifier)),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
-          _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
-          _buildComposer(chat, notifier),
-        ],
+            _SkillSuggestions(sessionId: widget.sessionId, controller: _composer),
+            _buildComposer(chat, notifier),
+          ],
+        ),
       ),
     );
   }
@@ -194,16 +204,83 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
   }
 
+  Future<void> _pickImages() async {
+    try {
+      final picked = await ImagePicker().pickMultiImage(maxWidth: 1600, imageQuality: 85);
+      if (picked.isNotEmpty && mounted) setState(() => _pendingImages.addAll(picked));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('选择图片失败: $e')));
+      }
+    }
+  }
+
+  String _mediaTypeOf(XFile file) {
+    final ext = file.name.split('.').last.toLowerCase();
+    return switch (ext) {
+      'png' => 'image/png',
+      'gif' => 'image/gif',
+      'webp' => 'image/webp',
+      _ => 'image/jpeg',
+    };
+  }
+
   Widget _buildComposer(ChatState chat, ChatNotifier notifier) {
     final theme = Theme.of(context);
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
+            if (_pendingImages.isNotEmpty)
+              SizedBox(
+                height: 64,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _pendingImages.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemBuilder: (context, i) {
+                    final file = _pendingImages[i];
+                    return Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: FutureBuilder<Uint8List>(
+                            future: file.readAsBytes(),
+                            builder: (context, snap) => snap.hasData
+                                ? Image.memory(snap.data!, width: 64, height: 64, fit: BoxFit.cover)
+                                : const SizedBox(width: 64, height: 64),
+                          ),
+                        ),
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: GestureDetector(
+                            onTap: () => setState(() => _pendingImages.removeAt(i)),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                  color: theme.colorScheme.scrim.withValues(alpha: 0.5),
+                                  shape: BoxShape.circle),
+                              child: const Icon(Icons.close, size: 14, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.add_photo_alternate_outlined),
+                  tooltip: '添加图片',
+                  onPressed: _pickImages,
+                ),
+                Expanded(
               child: TextField(
                 controller: _composer,
                 minLines: 1,
@@ -224,10 +301,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   ? null
                   : () async {
                       final text = _composer.text;
-                      if (text.trim().isEmpty) return;
+                      if (text.trim().isEmpty && _pendingImages.isEmpty) return;
                       _composer.clear();
+                      final images = _pendingImages.toList();
+                      setState(() => _pendingImages.clear());
                       try {
-                        await notifier.sendPrompt(text);
+                        final payloads = [
+                          for (final f in images)
+                            <String, Object>{
+                              'bytes': await f.readAsBytes(),
+                              'mediaType': _mediaTypeOf(f),
+                              'name': f.name,
+                            },
+                        ];
+                        await notifier.sendPrompt(text, images: payloads);
                       } catch (e) {
                         if (mounted) {
                           ScaffoldMessenger.of(context)
@@ -239,6 +326,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               icon: chat.sending
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                   : const PawIcon(size: 20),
+            ),
+              ],
             ),
           ],
         ),
@@ -431,13 +520,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 }
 
-class _UserBubble extends StatelessWidget {
+class _UserBubble extends ConsumerWidget {
   const _UserBubble({required this.item});
 
   final UserItem item;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     return Align(
       alignment: Alignment.centerRight,
@@ -455,10 +544,22 @@ class _UserBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (item.imageCount > 0)
+              if (item.images.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('📷 ×${item.imageCount}', style: theme.textTheme.bodySmall),
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final attachment in item.images)
+                        SessionImage(
+                          sessionId: ref.watch(currentSessionIdProvider),
+                          attachment: attachment,
+                          size: 96,
+                          borderRadius: 10,
+                        ),
+                    ],
+                  ),
                 ),
               Text(item.text, style: TextStyle(color: theme.colorScheme.onSecondaryContainer)),
             ],
@@ -469,18 +570,21 @@ class _UserBubble extends StatelessWidget {
   }
 }
 
-class _AssistantRow extends StatelessWidget {
+class _AssistantRow extends ConsumerWidget {
   const _AssistantRow({required this.item});
 
   final AssistantItem item;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final sessionId = ref.watch(currentSessionIdProvider);
     final isDark = theme.brightness == Brightness.dark;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
+    final messageId = item.messageId;
+    final rating = messageId == null
+        ? null
+        : ref.watch(messageFeedbackProvider(sessionId)).value?[messageId];
+    final bubble = Container(
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.92),
@@ -492,19 +596,41 @@ class _AssistantRow extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final block in item.blocks) ..._renderBlock(block, theme),
+            for (final block in item.blocks) ..._renderBlock(block, theme, sessionId),
             if (item.streaming)
               const Padding(
                 padding: EdgeInsets.only(top: 4),
                 child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
               ),
+            if (rating != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Icon(
+                  rating == 'positive' ? Icons.thumb_up_alt : Icons.thumb_down_alt,
+                  size: 12,
+                  color: rating == 'positive' ? theme.colorScheme.tertiary : theme.colorScheme.error,
+                ),
+              ),
           ],
         ),
-      ),
+      );
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: messageId == null || item.streaming
+          ? bubble
+          : GestureDetector(
+              onLongPress: () => showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                builder: (context) =>
+                    _FeedbackSheet(sessionId: sessionId, messageId: messageId, current: rating),
+              ),
+              child: bubble,
+            ),
     );
   }
 
-  List<Widget> _renderBlock(AssistantBlock block, ThemeData theme) {
+  List<Widget> _renderBlock(AssistantBlock block, ThemeData theme, String sessionId) {
     switch (block) {
       case TextBlock(text: final text):
         if (text.trim().isEmpty) return const [];
@@ -524,6 +650,18 @@ class _AssistantRow extends StatelessWidget {
             icon: Icons.build_outlined,
             label: '调用 $name',
             child: Text(args, style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
+          ),
+        ];
+      case ImageBlock(attachment: final attachment):
+        return [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: SessionImage(
+              sessionId: sessionId,
+              attachment: attachment,
+              size: 200,
+              borderRadius: 12,
+            ),
           ),
         ];
       case OtherBlock():
@@ -930,6 +1068,212 @@ class _GoalBanner extends ConsumerWidget {
               onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('complete'),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// 历史图片：`session.attachment` 按引用取 base64 并缓存渲染。
+class SessionImage extends ConsumerWidget {
+  const SessionImage({
+    super.key,
+    required this.sessionId,
+    required this.attachment,
+    this.size = 96,
+    this.borderRadius = 10,
+  });
+
+  final String sessionId;
+  final Map<String, dynamic> attachment;
+  final double size;
+  final double borderRadius;
+
+  static final Map<String, Uint8List> _cache = {};
+
+  String get _id => attachment['attachmentId'] as String? ?? '';
+
+  Future<Uint8List> _load(WidgetRef ref) async {
+    final cached = _cache[_id];
+    if (cached != null) return cached;
+    final connection = ref.read(connectionProvider);
+    if (connection == null) throw StateError('未连接');
+    final value = await connection.api.rpc('session.attachment', {
+      'sessionId': sessionId,
+      'attachmentId': _id,
+    });
+    final data = (value as Map)['data'] as String;
+    final bytes = base64Decode(data);
+    _cache[_id] = bytes;
+    return bytes;
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    return GestureDetector(
+      onTap: () async {
+        final bytes = _cache[_id] ?? await _load(ref);
+        if (!context.mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => Dialog(
+            child: InteractiveViewer(child: Image.memory(bytes)),
+          ),
+        );
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(borderRadius),
+        child: FutureBuilder<Uint8List>(
+          future: _cache[_id] != null ? Future.value(_cache[_id]) : _load(ref),
+          builder: (context, snap) {
+            if (snap.hasError) {
+              return Container(
+                width: size,
+                height: size,
+                color: theme.colorScheme.surfaceContainerHighest,
+                child: Icon(Icons.broken_image_outlined, color: theme.colorScheme.outline),
+              );
+            }
+            if (!snap.hasData) {
+              return Container(
+                width: size,
+                height: size,
+                color: theme.colorScheme.surfaceContainerHighest,
+                child: const Center(
+                    child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+              );
+            }
+            return Image.memory(snap.data!, width: size, height: size, fit: BoxFit.cover);
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// 助手消息长按 → 反馈（赞/踩 + 备注），messageFeedback/put。
+class _FeedbackSheet extends ConsumerStatefulWidget {
+  const _FeedbackSheet({required this.sessionId, required this.messageId, this.current});
+
+  final String sessionId;
+  final String messageId;
+  final String? current;
+
+  @override
+  ConsumerState<_FeedbackSheet> createState() => _FeedbackSheetState();
+}
+
+class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
+  String? _rating;
+  final _note = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _rating = widget.current;
+  }
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 12,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('这条回答怎么样？', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _RatingButton(
+                    icon: Icons.thumb_up_alt_outlined,
+                    label: '有帮助',
+                    selected: _rating == 'positive',
+                    color: theme.colorScheme.tertiary,
+                    onTap: () => setState(() => _rating = 'positive'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _RatingButton(
+                    icon: Icons.thumb_down_alt_outlined,
+                    label: '有问题',
+                    selected: _rating == 'negative',
+                    color: theme.colorScheme.error,
+                    onTap: () => setState(() => _rating = 'negative'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _note,
+              decoration: const InputDecoration(labelText: '备注（可选）'),
+              maxLines: 2,
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _rating == null
+                  ? null
+                  : () async {
+                      try {
+                        await putFeedback(ref, widget.sessionId, widget.messageId, _rating!,
+                            note: _note.text.trim().isEmpty ? null : _note.text.trim());
+                        if (!context.mounted) return;
+                        Navigator.pop(context);
+                      } catch (e) {
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text('提交失败: $e')));
+                      }
+                    },
+              child: const Text('提交反馈'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RatingButton extends StatelessWidget {
+  const _RatingButton({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, color: selected ? color : null),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        side: BorderSide(color: selected ? color : Theme.of(context).colorScheme.outlineVariant),
+        backgroundColor: selected ? color.withValues(alpha: 0.12) : null,
       ),
     );
   }
