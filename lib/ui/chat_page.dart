@@ -5,8 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/fold.dart';
 import '../api/models.dart';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../state/providers.dart';
@@ -697,12 +697,7 @@ class _AssistantRow extends ConsumerWidget {
       child: messageId == null || item.streaming
           ? bubble
           : GestureDetector(
-              onLongPress: () => showModalBottomSheet<void>(
-                context: context,
-                isScrollControlled: true,
-                builder: (context) =>
-                    _FeedbackSheet(sessionId: sessionId, messageId: messageId, current: rating),
-              ),
+              onLongPress: () => _showMessageActions(context, ref, sessionId, messageId, rating),
               child: bubble,
             ),
     );
@@ -1550,4 +1545,60 @@ class _JobsStrip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 助手消息长按操作菜单：复制全文 / 反馈。
+void _showMessageActions(
+    BuildContext context, WidgetRef ref, String sessionId, String messageId, String? rating) {
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.copy_outlined),
+            title: const Text('复制全文'),
+            onTap: () async {
+              final chat = ref.read(chatProvider(sessionId));
+              final item = chat.items.whereType<AssistantItem>().where((i) => i.messageId == messageId).firstOrNull;
+              if (item != null) {
+                final text = item.blocks
+                    .map((b) => switch (b) {
+                          TextBlock() => b.text,
+                          ReasoningBlock() => b.text,
+                          ToolCallBlock() => '[工具调用 \${b.name}]',
+                          ImageBlock() => '[图片]',
+                          OtherBlock() => '',
+                        })
+                    .where((t) => t.isNotEmpty)
+                    .join('\n\n');
+                await Clipboard.setData(ClipboardData(text: text));
+              }
+              if (sheetContext.mounted) {
+                Navigator.pop(sheetContext);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)),
+                );
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.thumbs_up_down_outlined),
+            title: const Text('反馈（赞/踩）'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              showModalBottomSheet<void>(
+                context: context,
+                isScrollControlled: true,
+                builder: (context) =>
+                    _FeedbackSheet(sessionId: sessionId, messageId: messageId, current: rating),
+              );
+            },
+          ),
+        ],
+      ),
+    ),
+  );
 }
