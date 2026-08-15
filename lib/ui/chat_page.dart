@@ -174,6 +174,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: _AssistantRow(item: chat.fold!.partial!),
             ),
+          // 模型工作中 & 尚无流式输出时，底部给一个可爱的等待提示。
+          if (chat.running && chat.fold?.partial == null) const _WorkingIndicator(),
           if (chat.jobs.isNotEmpty) _JobsStrip(jobs: chat.jobs),
           if (chat.queue.isNotEmpty) _QueueStrip(queue: chat.queue),
             _SkillSuggestions(
@@ -1784,6 +1786,89 @@ class _SystemCardState extends State<_SystemCard> {
             maxLines: _expanded || !long ? null : 4,
             overflow: _expanded || !long ? null : TextOverflow.ellipsis,
             style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 模型工作中的等待提示：思考中的猫娘插图 + 俏皮文案 + 省略号动画。
+class _WorkingIndicator extends StatefulWidget {
+  const _WorkingIndicator();
+
+  @override
+  State<_WorkingIndicator> createState() => _WorkingIndicatorState();
+}
+
+class _WorkingIndicatorState extends State<_WorkingIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _dots;
+
+  static const _copy = [
+    '妮可咪正在努力思考喵',
+    '猫娘大脑飞速运转中',
+    '正在给主人攒一个好回答',
+    '喵呜喵呜地敲着代码',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _dots = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))
+      ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _dots.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // 按时间轮播文案（每 3 秒一条）
+    final line = _copy[(DateTime.now().millisecondsSinceEpoch ~/ 3000) % _copy.length];
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: Image.asset(
+              'assets/illustrations/neko_thinking.png',
+              width: 36,
+              height: 36,
+              fit: BoxFit.cover,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              line,
+              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+          AnimatedBuilder(
+            animation: _dots,
+            builder: (context, _) {
+              final n = (_dots.value * 3).floor() % 3 + 1;
+              return Text(
+                '· ' * n,
+                style: TextStyle(
+                  color: theme.colorScheme.secondary,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
+              );
+            },
           ),
         ],
       ),

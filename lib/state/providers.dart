@@ -820,7 +820,7 @@ final sessionSearchProvider =
 });
 
 // ---------------------------------------------------------------------------
-// 目录浏览（host.listDirectory，供 workspace 创建选择目录）
+// 目录浏览（relay /__relay/listDir 优先，host.listDirectory 兜底）
 // ---------------------------------------------------------------------------
 
 final directoryListingProvider =
@@ -828,6 +828,22 @@ final directoryListingProvider =
   final connection = ref.watch(connectionProvider);
   if (connection == null || connection.status != ConnStatus.connected) {
     throw StateError('未连接');
+  }
+  // relay 跑在主机上，自己列目录——不占用 host 的 directory-picker seam
+  //（native 选择器是 Web GUI 本地新建工作区用的）。
+  try {
+    final uri = Uri.parse('${connection.baseUrl}/__relay/listDir')
+        .replace(queryParameters: {'path': ?path});
+    final response = await http.get(uri, headers: {
+      if (connection.token != null && connection.token!.isNotEmpty)
+        'x-relay-token': connection.token!,
+    }).timeout(const Duration(seconds: 15));
+    if (response.statusCode == 200) {
+      return DirectoryListing.fromJson(
+          (jsonDecode(utf8.decode(response.bodyBytes)) as Map).cast<String, dynamic>());
+    }
+  } catch (_) {
+    // relay 不支持 listDir（旧版）→ 回退 host 端 browse 能力
   }
   final value = await connection.api.rpc('host.listDirectory', {'path': ?path});
   return DirectoryListing.fromJson((value as Map).cast<String, dynamic>());

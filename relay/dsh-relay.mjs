@@ -16,6 +16,8 @@
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 const listenPort = Number(process.argv[2] ?? process.env.DSH_RELAY_PORT ?? 3081);
 const targetHost = process.argv[3] ?? process.env.DSH_TARGET_HOST ?? '127.0.0.1';
@@ -119,6 +121,66 @@ async function handleSlimHistory(req, res) {
   }
 }
 
+/**
+ * Relay-side directory browser: serves the dsh-remote App's workspace
+ * directory picker without touching the host's directory-picker seam
+ * (the host's native chooser is reserved for the Web GUI on the operator's
+ * display). Mirrors the host.listDirectory wire shape:
+ *
+ *   GET /__relay/listDir?path=/abs/dir   (absent path = home)
+ *   → { path, home, crumbs: [{name, path, hidden}], entries: [...], truncated }
+ *
+ * Directories only, name-sorted, symlinks-to-directories followed, broken or
+ * cyclic links skipped; hidden = dot-prefixed; capped at 1000 entries.
+ */
+async function handleListDir(req, res) {
+  try {
+    const url = new URL(req.url, 'http://x');
+    const home = os.homedir();
+    const target = url.searchParams.get('path') || home;
+    if (!path.isAbsolute(target)) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'path must be absolute' }));
+      return;
+    }
+    const dirents = await fs.readdir(target, { withFileTypes: true });
+    const entries = [];
+    let truncated = false;
+    for (const d of dirents) {
+      if (entries.length >= 1000) {
+        truncated = true;
+        break;
+      }
+      // 只收目录；目录符号链接跟随，stat 失败（断链/环链/权限）跳过。
+      let isDir = d.isDirectory();
+      if (d.isSymbolicLink()) {
+        try {
+          isDir = (await fs.stat(path.join(target, d.name))).isDirectory();
+        } catch {
+          continue;
+        }
+      }
+      if (!isDir) continue;
+      entries.push({ name: d.name, path: path.join(target, d.name), hidden: d.name.startsWith('.') });
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    // 面包屑：从根到目标的祖先链（根 crumb 用完整路径名）。
+    const crumbs = [];
+    const parts = path.resolve(target).split(path.sep).filter(Boolean);
+    let acc = path.sep;
+    crumbs.push({ name: path.sep, path: path.sep, hidden: false });
+    for (const part of parts) {
+      acc = path.join(acc, part);
+      crumbs.push({ name: part, path: acc, hidden: false });
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ path: target, home, crumbs, entries, truncated }));
+  } catch (err) {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `listDir failed: ${err.message}` }));
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (!authorized(req)) {
     res.writeHead(401, { 'content-type': 'text/plain' });
@@ -127,6 +189,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/__relay/history.slim' && req.method === 'POST') {
     handleSlimHistory(req, res);
+    return;
+  }
+  if (req.url?.startsWith('/__relay/listDir') && req.method === 'GET') {
+    handleListDir(req, res);
     return;
   }
   const upstream = http.request(
