@@ -213,13 +213,51 @@ class ModelProviderGroup {
 }
 
 class ModelCatalogModel {
-  ModelCatalogModel({required this.id, required this.name, this.description});
+  ModelCatalogModel({required this.id, required this.name, this.description, this.reasoning});
 
   final String id;
   final String name;
   final String? description;
 
-  factory ModelCatalogModel.fromJson(Map<String, dynamic> json) => ModelCatalogModel(
+  /// 精确模型的思考强度元数据（efforts 非空时支持切换）。
+  final ModelReasoning? reasoning;
+
+  factory ModelCatalogModel.fromJson(Map<String, dynamic> json) {
+    final r = json['reasoning'];
+    return ModelCatalogModel(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String?,
+      reasoning: r is Map<String, dynamic> ? ModelReasoning.fromJson(r) : null,
+    );
+  }
+}
+
+/// `session.models` 的思考强度元数据：{ efforts: [{id, name, description?}], defaultEffort? }
+class ModelReasoning {
+  ModelReasoning({required this.efforts, this.defaultEffort});
+
+  final List<ModelEffort> efforts;
+  final String? defaultEffort;
+
+  factory ModelReasoning.fromJson(Map<String, dynamic> json) => ModelReasoning(
+        efforts: (json['efforts'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map(ModelEffort.fromJson)
+                .toList() ??
+            const [],
+        defaultEffort: json['defaultEffort'] as String?,
+      );
+}
+
+class ModelEffort {
+  ModelEffort({required this.id, required this.name, this.description});
+
+  final String id;
+  final String name;
+  final String? description;
+
+  factory ModelEffort.fromJson(Map<String, dynamic> json) => ModelEffort(
         id: json['id'] as String? ?? '',
         name: json['name'] as String? ?? '',
         description: json['description'] as String?,

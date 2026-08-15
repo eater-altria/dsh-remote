@@ -743,13 +743,16 @@ final sessionModelsProvider = FutureProvider.family<SessionModels, String>((ref,
 });
 
 /// 切换当前会话的模型选择（host 会把它存为部署默认值）。
-Future<void> selectModel(WidgetRef ref, String sessionId, String provider, String model) async {
+/// [reasoningEffort]：思考强度 id（该模型支持 reasoning 时可选）。
+Future<void> selectModel(WidgetRef ref, String sessionId, String provider, String model,
+    {String? reasoningEffort}) async {
   final connection = ref.read(connectionProvider);
   if (connection == null) return;
   await connection.api.rpc('session.selectModel', {
     'sessionId': sessionId,
     'provider': provider,
     'model': model,
+    'reasoningEffort': ?reasoningEffort,
   });
   ref.invalidate(sessionModelsProvider(sessionId));
 }
