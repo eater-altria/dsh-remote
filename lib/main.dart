@@ -16,11 +16,17 @@ class DshRemoteApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final serverUrl = ref.watch(serverProfileProvider);
+    final mode = ref.watch(themeModeProvider);
     return MaterialApp(
       title: 'DSH Remote',
       debugShowCheckedModeBanner: false,
       theme: NekoTheme.light(),
       darkTheme: NekoTheme.dark(),
+      themeMode: switch (mode) {
+        'light' => ThemeMode.light,
+        'dark' => ThemeMode.dark,
+        _ => ThemeMode.system,
+      },
       home: serverUrl == null ? const SetupPage() : const HomePage(),
     );
   }

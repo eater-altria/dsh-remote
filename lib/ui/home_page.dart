@@ -50,10 +50,38 @@ class HomePage extends ConsumerWidget {
                 await Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const SettingsPage()),
                 );
+              } else if (value == 'theme') {
+                final current = ref.read(themeModeProvider);
+                final chosen = await showModalBottomSheet<String>(
+                  context: context,
+                  showDragHandle: true,
+                  builder: (context) => SafeArea(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final (value, label, icon) in [
+                          ('system', '跟随系统', Icons.brightness_auto),
+                          ('light', '浅色（奶蓝樱花）', Icons.light_mode_outlined),
+                          ('dark', '深色（暗夜粉彩）', Icons.dark_mode_outlined),
+                        ])
+                          ListTile(
+                            leading: Icon(icon),
+                            title: Text(label),
+                            trailing: current == value ? const Icon(Icons.check) : null,
+                            onTap: () => Navigator.pop(context, value),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+                if (chosen != null) {
+                  await ref.read(themeModeProvider.notifier).setMode(chosen);
+                }
               }
             },
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'new_workspace', child: Text('新建 Workspace')),
+              PopupMenuItem(value: 'theme', child: Text('外观主题')),
               PopupMenuItem(value: 'settings', child: Text('设置')),
               PopupMenuItem(value: 'disconnect', child: Text('断开连接')),
             ],

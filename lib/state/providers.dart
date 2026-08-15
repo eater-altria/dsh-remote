@@ -21,6 +21,7 @@ import '../api/wire.dart';
 // ---------------------------------------------------------------------------
 
 const _kServerUrlKey = 'dsh.serverUrl';
+const _kThemeModeKey = 'dsh.themeMode'; // system | light | dark
 
 class ServerProfileNotifier extends Notifier<String?> {
   @override
@@ -922,3 +923,28 @@ final agentPresetListProvider = FutureProvider<List<AgentPresetEntry>>((ref) asy
   final rows = map['presets'];
   return (rows as List?)?.whereType<Map<String, dynamic>>().map(AgentPresetEntry.fromJson).toList() ?? const [];
 });
+
+// ---------------------------------------------------------------------------
+// 主题模式（跟随系统 / 浅色 / 深色）
+// ---------------------------------------------------------------------------
+
+class ThemeModeNotifier extends Notifier<String> {
+  @override
+  String build() {
+    _load();
+    return 'system';
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getString(_kThemeModeKey) ?? 'system';
+  }
+
+  Future<void> setMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kThemeModeKey, mode);
+    state = mode;
+  }
+}
+
+final themeModeProvider = NotifierProvider<ThemeModeNotifier, String>(ThemeModeNotifier.new);
