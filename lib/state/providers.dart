@@ -669,8 +669,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, String> {
             const [];
         state = state.copyWith(queue: items);
       case 'session/jobs':
-        final jobs = (payload['jobs'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? const [];
-        state = state.copyWith(jobs: jobs);
+        state = state.copyWith(jobs: activeJobsFromSnapshot(payload['jobs']));
       case 'session/projection':
         if (payload['key'] == 'title') {
           final value = payload['value'];
