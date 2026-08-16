@@ -10,6 +10,7 @@ import 'dart:convert';
 /// - `assistant/chunk` -> streaming partial assistant blocks (indexed)
 /// - `assistant/message` (append surface) -> finalized assistant message
 /// - `tool/call` / `tool/result` -> tool cards (paired by callId)
+/// - `approval/asked` / `approval/decided` -> approval cards (paired by id, 常驻展示结果)
 /// - `turn/start` / `turn/end` -> running flag
 /// - `session/title` -> title
 /// - `compaction/summary`, `command/run` -> system notices
@@ -153,6 +154,36 @@ class SystemItem extends ChatItem {
   final String text;
 }
 
+/// 工具审批卡片：approval/asked 落卡、approval/decided 按 id 回填结果。
+/// 事件在会话日志里持久存在，卡片跨重进/重连常驻展示。
+class ApprovalItem extends ChatItem {
+  const ApprovalItem({
+    required super.seq,
+    required this.approvalId,
+    required this.toolName,
+    this.callId,
+    this.reason,
+    this.outcome,
+  });
+
+  final String approvalId;
+  final String toolName;
+  final String? callId;
+  final String? reason;
+
+  /// null = 待决；否则为 allowed-once / rejected / cancelled / unavailable。
+  final String? outcome;
+
+  ApprovalItem copyWith({String? outcome}) => ApprovalItem(
+        seq: seq,
+        approvalId: approvalId,
+        toolName: toolName,
+        callId: callId,
+        reason: reason,
+        outcome: outcome ?? this.outcome,
+      );
+}
+
 class NoticeItem extends ChatItem {
   const NoticeItem({required super.seq, required this.text});
   final String text;
@@ -176,6 +207,9 @@ class ChatFold {
 
   /// Index of tool items by callId for result pairing.
   final Map<String, int> _toolIndex = {};
+
+  /// Index of approval items by approvalId for decided pairing.
+  final Map<String, int> _approvalIndex = {};
 
   /// Whether the event is an append-surface event (durable replacement copies
   /// — e.g. compaction checkpoints — carry surfaceOp != 'append' and are not
@@ -315,6 +349,34 @@ class ChatFold {
             isError: isError,
             finished: true,
           ));
+        }
+      case 'approval/asked':
+        // { id, toolName, callId?, reason? } —— 落一张待决审批卡。
+        _finalizePartial();
+        final id = '${map['id'] ?? ''}';
+        if (id.isEmpty || _approvalIndex.containsKey(id)) return;
+        _approvalIndex[id] = items.length;
+        items.add(ApprovalItem(
+          seq: seq,
+          approvalId: id,
+          toolName: map['toolName'] as String? ?? 'tool',
+          callId: map['callId'] as String?,
+          reason: map['reason'] as String?,
+        ));
+      case 'approval/decided':
+        // { id, outcome } —— 回填结果；asked 缺失（跨页/乱序）时补一张已决卡。
+        final id = '${map['id'] ?? ''}';
+        final outcome = map['outcome'] as String? ?? 'unavailable';
+        final idx = _approvalIndex[id];
+        if (idx != null && idx >= 0 && idx < items.length) {
+          final item = items[idx];
+          if (item is ApprovalItem) {
+            items[idx] = item.copyWith(outcome: outcome);
+          }
+        } else if (id.isNotEmpty) {
+          _approvalIndex[id] = items.length;
+          items.add(ApprovalItem(
+              seq: seq, approvalId: id, toolName: 'tool', outcome: outcome));
         }
       case 'turn/start':
         running = true;

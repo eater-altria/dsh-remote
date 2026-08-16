@@ -76,6 +76,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       UserItem() => last.text.length,
       SystemItem() => last.text.length,
       ToolItem() => last.resultPreview?.length ?? 0,
+      ApprovalItem() => last.reason?.length ?? 1,
       NoticeItem() => last.text.length,
     };
     return items.length * 1000000 + lastSize;
@@ -125,9 +126,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     ref.listen(chatProvider(widget.sessionId).select((s) => s.pendingQuestion), (_, next) {
       if (next != null) _showQuestionSheet(next);
     });
-    ref.listen(chatProvider(widget.sessionId).select((s) => s.pendingApproval), (_, next) {
-      if (next != null) _showApprovalDialog(next);
-    });
+    // 审批不再弹窗：approval/asked 事件经 fold 落成消息列表里的常驻卡片。
 
     return ProviderScope(
       overrides: [currentSessionIdProvider.overrideWithValue(widget.sessionId)],
@@ -212,10 +211,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ),
       );
     }
+    // 兜底：pendingApproval 已到但 approval/asked 事件未落卡（乱序/旧 host）时，
+    // 在列表尾部补一张可交互审批卡。
+    final pending = chat.pendingApproval;
+    final needsFallbackCard = pending != null &&
+        !chat.items.any((i) => i is ApprovalItem && i.approvalId == pending.approvalId);
+    final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + (needsFallbackCard ? 1 : 0);
     return ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      itemCount: chat.items.length + (chat.hasMore ? 1 : 0),
+      itemCount: rowCount,
       itemBuilder: (context, index) {
         if (chat.hasMore && index == 0) {
           return Center(
@@ -225,12 +230,26 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ),
           );
         }
+        if (needsFallbackCard && index == rowCount - 1) {
+          return RepaintBoundary(
+            child: _ApprovalCard(
+              item: ApprovalItem(
+                seq: -1,
+                approvalId: pending.approvalId,
+                toolName: pending.toolName,
+                callId: pending.callId,
+                reason: pending.reason,
+              ),
+            ),
+          );
+        }
         final item = chat.items[chat.hasMore ? index - 1 : index];
         return RepaintBoundary(
           child: switch (item) {
             UserItem() => _UserBubble(item: item),
             AssistantItem() => _AssistantRow(item: item),
             ToolItem() => _ToolCard(item: item),
+            ApprovalItem() => _ApprovalCard(item: item),
             NoticeItem() => _NoticeRow(item: item),
             SystemItem() => _SystemCard(item: item),
           },
@@ -699,25 +718,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       await notifier.answerQuestion(answers);
     }
   }
-
-  Future<void> _showApprovalDialog(PendingApproval pending) async {
-    final notifier = ref.read(chatProvider(widget.sessionId).notifier);
-    final approved = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: const Icon(Icons.shield_outlined),
-        title: Text('批准 ${pending.toolName} ?'),
-        content: Text(pending.reason ?? '该工具调用需要你的批准。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('拒绝')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('批准')),
-        ],
-      ),
-    );
-    if (approved != null) {
-      await notifier.answerApproval(approved);
-    }
-  }
 }
 
 class _UserBubble extends ConsumerWidget {
@@ -906,11 +906,107 @@ class _ToolCard extends StatelessWidget {
   }
 }
 
+/// 审批卡片（design.md §4 卡片模式）：像一条消息留在列表里。
+/// 待决且仍是 host 侧 pending 时显示 批准/拒绝 按钮；已决定的常驻展示结果徽标。
+class _ApprovalCard extends ConsumerWidget {
+  const _ApprovalCard({required this.item});
+
+  final ApprovalItem item;
+
+  static const _outcomeLabels = {
+    'allowed-once': '已批准',
+    'rejected': '已拒绝',
+    'cancelled': '已取消',
+    'unavailable': '已失效',
+  };
+
+  Future<void> _answer(WidgetRef ref, String sessionId, bool approved) async {
+    await ref.read(chatProvider(sessionId).notifier).answerApproval(approved);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final sessionId = ref.watch(currentSessionIdProvider);
+    final pending = ref.watch(chatProvider(sessionId).select((s) => s.pendingApproval));
+    final interactive = pending != null && pending.approvalId == item.approvalId;
+    final outcome = item.outcome;
+
+    final (chipLabel, chipColor) = switch (outcome) {
+      'allowed-once' => (_outcomeLabels[outcome]!, scheme.tertiary),
+      'rejected' => (_outcomeLabels[outcome]!, scheme.error),
+      null => ('', scheme.onSurfaceVariant),
+      _ => (_outcomeLabels[outcome] ?? outcome, scheme.onSurfaceVariant),
+    };
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.shield_outlined, size: 16, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    outcome == null ? '批准 ${item.toolName}？' : '审批 ${item.toolName}',
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
+                if (outcome != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: chipColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: chipColor.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(chipLabel, style: TextStyle(fontSize: 11, color: chipColor)),
+                  ),
+              ],
+            ),
+            if (item.reason != null && item.reason!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(item.reason!, style: theme.textTheme.bodySmall),
+            ],
+            if (interactive) ...[
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => _answer(ref, sessionId, false),
+                    child: const Text('拒绝'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => _answer(ref, sessionId, true),
+                    child: const Text('批准'),
+                  ),
+                ],
+              ),
+            ] else if (outcome == null) ...[
+              const SizedBox(height: 6),
+              Text(
+                '等待主机确认中…',
+                style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _NoticeRow extends StatelessWidget {
   const _NoticeRow({required this.item});
 
   final NoticeItem item;
-
   @override
   Widget build(BuildContext context) {
     return Center(
