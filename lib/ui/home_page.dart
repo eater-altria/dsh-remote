@@ -6,6 +6,7 @@ import 'dart:async';
 import '../api/client.dart';
 import '../api/download_service.dart';
 import '../api/models.dart';
+import '../api/push_dedupe.dart';
 import '../state/providers.dart';
 import 'chat_page.dart';
 import 'inbox_page.dart';
@@ -22,7 +23,8 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   StreamSubscription<Map<String, dynamic>>? _pushSub;
-  final Set<String> _seenPushes = {};
+  // relay 每次 WS 连接会补发最近推送；已处理 id 持久化，重启 App 不再重复弹窗。
+  final PushDedupe _pushDedupe = PushDedupe();
 
   @override
   void initState() {
@@ -38,9 +40,9 @@ class _HomePageState extends ConsumerState<HomePage> {
     }, fireImmediately: true);
   }
 
-  void _onPush(Map<String, dynamic> meta) {
+  Future<void> _onPush(Map<String, dynamic> meta) async {
     final id = meta['id'] as String? ?? '';
-    if (id.isEmpty || !_seenPushes.add(id)) return; // 补发去重
+    if (!await _pushDedupe.markIfNew(id)) return; // 补发/已处理去重
     if (!mounted) return;
     final name = meta['name'] as String? ?? '文件';
     final bytes = (meta['bytes'] as num?)?.toInt() ?? 0;
