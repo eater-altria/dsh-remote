@@ -3,8 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api/notifications.dart';
 import 'state/providers.dart';
-import 'ui/home_page.dart';
-import 'ui/setup_page.dart';
+import 'ui/hosts_page.dart';
 import 'ui/theme.dart';
 
 void main() async {
@@ -33,7 +32,7 @@ class DshRemoteApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final serverUrl = ref.watch(serverProfileProvider);
+    final hosts = ref.watch(hostsProvider);
     final mode = ref.watch(themeModeProvider);
     return MaterialApp(
       title: 'DSH Remote',
@@ -45,7 +44,10 @@ class DshRemoteApp extends ConsumerWidget {
         'dark' => ThemeMode.dark,
         _ => ThemeMode.system,
       },
-      home: serverUrl == null ? const SetupPage() : const HomePage(),
+      // null = 主机列表尚未从磁盘恢复，先渲染加载态避免闪空页。
+      home: hosts == null
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : const HostsPage(),
     );
   }
 }

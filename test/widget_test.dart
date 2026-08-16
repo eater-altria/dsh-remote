@@ -1,32 +1,29 @@
 import 'package:dsh_remote/api/fold.dart';
 import 'package:dsh_remote/api/wire.dart';
-import 'package:dsh_remote/ui/setup_page.dart';
+import 'package:dsh_remote/ui/hosts_page.dart';
 import 'package:dsh_remote/ui/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   testWidgets(
-    'setup page shows the generated catgirl hero at a fixed square size',
+    'hosts page shows the empty-state invite when no host is configured',
     (tester) async {
+      SharedPreferences.setMockInitialValues({});
       await tester.pumpWidget(
         ProviderScope(
-          child: MaterialApp(theme: NekoTheme.light(), home: const SetupPage()),
+          child: MaterialApp(theme: NekoTheme.light(), home: const HostsPage()),
         ),
       );
+      await tester.pumpAndSettle();
 
       expect(find.byType(NekoHero), findsOneWidget);
-      expect(find.byType(NekoMascot), findsNothing);
-
-      final imageFinder = find.descendant(
-        of: find.byType(NekoHero),
-        matching: find.byType(Image),
-      );
-      expect(imageFinder, findsOneWidget);
-      expect(tester.getSize(imageFinder), const Size.square(156));
-      final image = tester.widget<Image>(imageFinder);
-      expect((image.image as AssetImage).assetName, NekoHero.assetName);
+      expect(find.text('添加主机'), findsWidgets); // 空状态主按钮
+      expect(find.byTooltip('添加主机'), findsOneWidget); // AppBar 加号
     },
   );
 

@@ -104,7 +104,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('DSH Remote'),
+        title: Text(ref.watch(activeHostProvider)?.name ?? 'DSH Remote'),
         actions: [
           if (connection != null)
             ListenableBuilder(
@@ -126,8 +126,8 @@ class _HomePageState extends ConsumerState<HomePage> {
           ),
           PopupMenuButton<String>(
             onSelected: (value) async {
-              if (value == 'disconnect') {
-                await ref.read(connectionProvider.notifier).disconnect();
+              if (value == 'hosts') {
+                Navigator.of(context).pop();
               } else if (value == 'new_workspace') {
                 await _createWorkspace(context, ref);
               } else if (value == 'settings') {
@@ -172,7 +172,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               PopupMenuItem(value: 'inbox', child: Text('文件收件箱')),
               PopupMenuItem(value: 'theme', child: Text('外观主题')),
               PopupMenuItem(value: 'settings', child: Text('设置')),
-              PopupMenuItem(value: 'disconnect', child: Text('断开连接')),
+              PopupMenuItem(value: 'hosts', child: Text('返回主机列表')),
             ],
           ),
         ],

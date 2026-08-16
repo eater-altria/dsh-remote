@@ -17,38 +17,177 @@ import '../api/models.dart';
 import '../api/wire.dart';
 
 // ---------------------------------------------------------------------------
-// Server profile (persisted)
+// Host profiles（多主机配置，持久化）
 // ---------------------------------------------------------------------------
 
-const _kServerUrlKey = 'dsh.serverUrl';
 const _kThemeModeKey = 'dsh.themeMode'; // system | light | dark
-const _kRelayTokenKey = 'dsh.relayToken';
+const _kHostProfilesKey = 'dsh.hostProfiles';
+const _kActiveHostKey = 'dsh.activeHostId';
+// 单主机时代的遗留键，仅用于一次性迁移。
+const _kLegacyServerUrlKey = 'dsh.serverUrl';
+const _kLegacyRelayTokenKey = 'dsh.relayToken';
 
-class ServerProfileNotifier extends Notifier<String?> {
+/// 一台远程主机的连接配置。
+class HostProfile {
+  HostProfile({
+    required this.id,
+    required this.name,
+    required this.url,
+    this.token = '',
+  });
+
+  final String id;
+  final String name;
+  final String url;
+  final String token; // relay 访问令牌，空串 = 未设置
+
+  HostProfile copyWith({String? name, String? url, String? token}) => HostProfile(
+        id: id,
+        name: name ?? this.name,
+        url: url ?? this.url,
+        token: token ?? this.token,
+      );
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'url': url, 'token': token};
+
+  factory HostProfile.fromJson(Map<String, dynamic> json) => HostProfile(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        url: json['url'] as String? ?? '',
+        token: json['token'] as String? ?? '',
+      );
+
+  /// 默认显示名：URL 的 host[:port] 部分。
+  static String defaultName(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.host.isEmpty) return url;
+    return uri.hasPort ? '${uri.host}:${uri.port}' : uri.host;
+  }
+}
+
+/// 主机列表。状态为 null 表示尚未从磁盘恢复（首帧加载中）。
+class HostsNotifier extends Notifier<List<HostProfile>?> {
+  Future<void>? _loading;
+
+  /// 首次磁盘恢复完成的 Future（首帧等待 / 测试用）。
+  Future<void> get ready => _loading ?? Future.value();
+
   @override
-  String? build() {
-    _load();
+  List<HostProfile>? build() {
+    _loading = _load();
     return null;
   }
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
-    state = prefs.getString(_kServerUrlKey);
+    final raw = prefs.getString(_kHostProfilesKey);
+    if (raw != null) {
+      state = [
+        for (final item in (jsonDecode(raw) as List? ?? const []))
+          if (item is Map<String, dynamic>) HostProfile.fromJson(item)
+      ];
+      return;
+    }
+    // 一次性迁移：单主机配置 → 第一台主机。
+    final legacyUrl = prefs.getString(_kLegacyServerUrlKey);
+    if (legacyUrl != null && legacyUrl.isNotEmpty) {
+      state = [
+        HostProfile(
+          id: mintRpcId(),
+          name: HostProfile.defaultName(legacyUrl),
+          url: legacyUrl,
+          token: prefs.getString(_kLegacyRelayTokenKey) ?? '',
+        )
+      ];
+      await prefs.remove(_kLegacyServerUrlKey);
+      await prefs.remove(_kLegacyRelayTokenKey);
+      await _persist();
+      return;
+    }
+    state = const [];
   }
 
-  Future<void> setUrl(String url) async {
-    final normalized = normalizeBaseUrl(url);
+  Future<HostProfile> add({required String url, String name = '', String token = ''}) async {
+    final profile = HostProfile(
+      id: mintRpcId(),
+      name: name.isEmpty ? HostProfile.defaultName(url) : name,
+      url: url,
+      token: token,
+    );
+    state = [...?state, profile];
+    await _persist();
+    return profile;
+  }
+
+  Future<void> update(HostProfile profile) async {
+    state = [
+      for (final p in state ?? const <HostProfile>[]) p.id == profile.id ? profile : p
+    ];
+    await _persist();
+  }
+
+  Future<void> remove(String id) async {
+    state = [for (final p in state ?? const <HostProfile>[]) if (p.id != id) p];
+    await _persist();
+    if (ref.read(activeHostIdProvider) == id) {
+      await ref.read(activeHostIdProvider.notifier).clear();
+    }
+  }
+
+  Future<void> _persist() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kServerUrlKey, normalized);
-    state = normalized;
+    await prefs.setString(
+      _kHostProfilesKey,
+      jsonEncode([for (final p in state ?? const <HostProfile>[]) p.toJson()]),
+    );
+  }
+}
+
+final hostsProvider = NotifierProvider<HostsNotifier, List<HostProfile>?>(HostsNotifier.new);
+
+/// 当前选中的主机 id（持久化）。null = 未选择，停留在主机列表。
+class ActiveHostNotifier extends Notifier<String?> {
+  Future<void>? _loading;
+
+  /// 首次磁盘恢复完成的 Future（测试用）。
+  Future<void> get ready => _loading ?? Future.value();
+
+  @override
+  String? build() {
+    _loading = _load();
+    return null;
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getString(_kActiveHostKey);
+  }
+
+  Future<void> select(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kActiveHostKey, id);
+    state = id;
   }
 
   Future<void> clear() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_kServerUrlKey);
+    await prefs.remove(_kActiveHostKey);
     state = null;
   }
 }
+
+final activeHostIdProvider = NotifierProvider<ActiveHostNotifier, String?>(ActiveHostNotifier.new);
+
+/// 当前选中主机的完整配置（未选择 / 列表未恢复 / id 失效时为 null）。
+final activeHostProvider = Provider<HostProfile?>((ref) {
+  final id = ref.watch(activeHostIdProvider);
+  final hosts = ref.watch(hostsProvider);
+  if (id == null || hosts == null) return null;
+  for (final host in hosts) {
+    if (host.id == id) return host;
+  }
+  return null;
+});
 
 /// Normalize user input into `http://host:port` form.
 String normalizeBaseUrl(String input) {
@@ -60,30 +199,6 @@ String normalizeBaseUrl(String input) {
   }
   return url;
 }
-
-final serverProfileProvider = NotifierProvider<ServerProfileNotifier, String?>(ServerProfileNotifier.new);
-
-/// relay 访问令牌（对应主机的 DSH_RELAY_TOKEN），持久化存储。
-class RelayTokenNotifier extends Notifier<String> {
-  @override
-  String build() {
-    _load();
-    return '';
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getString(_kRelayTokenKey) ?? '';
-  }
-
-  Future<void> setToken(String token) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kRelayTokenKey, token);
-    state = token;
-  }
-}
-
-final relayTokenProvider = NotifierProvider<RelayTokenNotifier, String>(RelayTokenNotifier.new);
 
 /// 当前聊天页的 sessionId（ProviderScope override 注入，供深层图片/反馈组件读取）。
 final currentSessionIdProvider = Provider<String>((ref) => throw UnimplementedError('未注入 sessionId'));
@@ -99,24 +214,33 @@ final apiFactoryProvider = Provider<DshApi Function(String)>((ref) {
 // ---------------------------------------------------------------------------
 
 class ConnectionNotifier extends Notifier<DshConnection?> {
+  DshConnection? _connection;
+  String? _url;
+  String? _token;
+
   @override
   DshConnection? build() {
-    final url = ref.watch(serverProfileProvider);
-    if (url == null || url.isEmpty) {
+    final host = ref.watch(activeHostProvider);
+    final url = host?.url;
+    final token = (host == null || host.token.isEmpty) ? null : host.token;
+    // 仅名称等无关字段变化时保留现有连接，不切线。
+    if (url != null && url == _url && token == _token && _connection != null) {
+      return _connection;
+    }
+    _connection?.dispose();
+    _url = url;
+    _token = token;
+    if (url == null) {
+      _connection = null;
       return null;
     }
-    final connection = DshConnection(url, token: ref.watch(relayTokenProvider));
-    ref.onDispose(() => connection.dispose());
+    final connection = DshConnection(url, token: token);
+    _connection = connection;
     unawaited(connection.connect());
     return connection;
   }
 
   Future<void> reconnect() async => state?.connect();
-
-  Future<void> disconnect() async {
-    await state?.disconnect();
-    await ref.read(serverProfileProvider.notifier).clear();
-  }
 }
 
 final connectionProvider = NotifierProvider<ConnectionNotifier, DshConnection?>(ConnectionNotifier.new);
@@ -302,9 +426,19 @@ class ChatState {
       );
 }
 
+/// session/jobs 快照过滤：任务条只展示活动任务
+/// （host 快照会保留 completed/killed/failed 的已终结任务）。
+List<Map<String, dynamic>> activeJobsFromSnapshot(Object? raw) {
+  const terminal = {'completed', 'killed', 'failed'};
+  return (raw as List?)
+          ?.whereType<Map<String, dynamic>>()
+          .where((job) => !terminal.contains(job['status']))
+          .toList() ??
+      const [];
+}
+
 class ChatNotifier extends FamilyNotifier<ChatState, String> {
-  StreamSubscription? _muxSub;
-  void Function()? _statusListener;
+  StreamSubscription? _muxSub;  void Function()? _statusListener;
   int _historyGeneration = 0;
   final List<Map<String, dynamic>> _pendingChunks = [];
   Timer? _chunkFlushTimer;
