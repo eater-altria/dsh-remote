@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../state/providers.dart';
 import 'theme.dart';
+import 'tool_cards.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Chat surface for one session: history, streaming replies, tool cards,
@@ -60,26 +61,34 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _stickToBottom = position.pixels >= position.maxScrollExtent - 120;
   }
 
-  /// 内容签名：条目数 + 最后一条的长度（流式增长时条数不变但内容在变）。
+  /// 内容签名：条目数 + 最后一条的长度 + 流式 partial 长度
+  ///（流式增长时条数不变但内容在变；partial 现在是列表最后一行，签名要覆盖它）。
   int _contentSignature(ChatState chat) {
+    int blocksSize(List<AssistantBlock> blocks) => blocks.fold<int>(
+        0,
+        (sum, b) => sum + switch (b) {
+              TextBlock() => b.text.length,
+              ReasoningBlock() => b.text.length,
+              ToolCallBlock() => b.argsRaw.length,
+              ImageBlock() => 1,
+              OtherBlock() => 0,
+            });
+    final partialSize = switch (chat.fold?.partial) {
+      null => 0,
+      final p => blocksSize(p.blocks),
+    };
     final items = chat.items;
-    if (items.isEmpty) return 0;
+    if (items.isEmpty) return partialSize;
     final last = items.last;
     final lastSize = switch (last) {
-      AssistantItem() => last.blocks.fold<int>(0, (sum, b) => sum + switch (b) {
-            TextBlock() => b.text.length,
-            ReasoningBlock() => b.text.length,
-            ToolCallBlock() => b.argsRaw.length,
-            ImageBlock() => 1,
-            OtherBlock() => 0,
-          }),
+      AssistantItem() => blocksSize(last.blocks),
       UserItem() => last.text.length,
       SystemItem() => last.text.length,
       ToolItem() => last.resultPreview?.length ?? 0,
       ApprovalItem() => last.reason?.length ?? 1,
       NoticeItem() => last.text.length,
     };
-    return items.length * 1000000 + lastSize;
+    return items.length * 1000000 + lastSize + partialSize;
   }
 
   void _maybeScrollToEnd(ChatState chat) {
@@ -167,13 +176,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           _PlanBanner(projections: chat.projections),
           _TodoBar(projections: chat.projections),
           Expanded(child: _buildList(chat, notifier)),
-          // 流式区独立于消息列表（kimi-remote 模式）：chunk 更新只重建这一块，
-          // 不再触碰上方整表。
-          if (chat.fold?.partial != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: _AssistantRow(item: chat.fold!.partial!),
-            ),
           // 模型工作中 & 尚无流式输出时，底部给一个可爱的等待提示。
           if (chat.running && chat.fold?.partial == null) const _WorkingIndicator(),
           if (chat.jobs.isNotEmpty) _JobsStrip(jobs: chat.jobs),
@@ -188,6 +190,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Widget _buildList(ChatState chat, ChatNotifier notifier) {
+    final partial = chat.fold?.partial;
     if (chat.loadingHistory && chat.items.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -199,12 +202,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         ),
       );
     }
-    if (chat.items.isEmpty) {
+    if (chat.items.isEmpty && partial == null) {
       return const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            NekoMascot(size: 72),
+            NekoHero(size: 156),
             SizedBox(height: 12),
             Text('开始新的对话吧'),
           ],
@@ -216,7 +219,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final pending = chat.pendingApproval;
     final needsFallbackCard = pending != null &&
         !chat.items.any((i) => i is ApprovalItem && i.approvalId == pending.approvalId);
-    final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + (needsFallbackCard ? 1 : 0);
+    // 尾部行序：审批兜底卡 → 流式 partial（思考过程随对话流滚动，长内容不再挤掉输入框）。
+    final tailRows = (needsFallbackCard ? 1 : 0) + (partial != null ? 1 : 0);
+    final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + tailRows;
     return ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -230,20 +235,26 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ),
           );
         }
-        if (needsFallbackCard && index == rowCount - 1) {
-          return RepaintBoundary(
-            child: _ApprovalCard(
-              item: ApprovalItem(
-                seq: -1,
-                approvalId: pending.approvalId,
-                toolName: pending.toolName,
-                callId: pending.callId,
-                reason: pending.reason,
+        final itemIndex = chat.hasMore ? index - 1 : index;
+        if (itemIndex >= chat.items.length) {
+          final tail = itemIndex - chat.items.length;
+          if (needsFallbackCard && tail == 0) {
+            return RepaintBoundary(
+              child: _ApprovalCard(
+                item: ApprovalItem(
+                  seq: -1,
+                  approvalId: pending.approvalId,
+                  toolName: pending.toolName,
+                  callId: pending.callId,
+                  reason: pending.reason,
+                ),
               ),
-            ),
-          );
+            );
+          }
+          // 流式 partial 作为列表最后一行：随对话流滚动。
+          return RepaintBoundary(child: _AssistantRow(item: partial!));
         }
-        final item = chat.items[chat.hasMore ? index - 1 : index];
+        final item = chat.items[itemIndex];
         return RepaintBoundary(
           child: switch (item) {
             UserItem() => _UserBubble(item: item),
@@ -873,6 +884,16 @@ class _ToolCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // read / write / edit / bash 走富文本卡片（diff 面板、语法高亮、终端风输出）。
+    switch (item.tool) {
+      case 'bash':
+        return BashToolCard(item: item);
+      case 'read':
+        return ReadToolCard(item: item);
+      case 'write':
+      case 'edit':
+        return WriteToolCard(item: item);
+    }
     final theme = Theme.of(context);
     final color = !item.finished
         ? theme.colorScheme.onSurfaceVariant

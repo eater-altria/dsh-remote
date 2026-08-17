@@ -121,13 +121,19 @@ class ToolItem extends ChatItem {
     required super.seq,
     required this.callId,
     required this.name,
+    this.tool = '',
     this.argsRaw = '',
     this.resultPreview,
     this.isError = false,
     this.finished = false,
   });
   final String callId;
+
+  /// 展示名（宿主卡片标题优先，如 "Read lib/api/client.dart (1 - 90)"）。
   final String name;
+
+  /// 原始工具名（read/write/edit/bash…），用于按工具类型分发卡片。
+  final String tool;
   final String argsRaw;
   final String? resultPreview;
   final bool isError;
@@ -137,6 +143,7 @@ class ToolItem extends ChatItem {
         seq: seq,
         callId: callId,
         name: name,
+        tool: tool,
         argsRaw: argsRaw,
         resultPreview: resultPreview ?? this.resultPreview,
         isError: isError ?? this.isError,
@@ -299,7 +306,7 @@ class ChatFold {
           final old = items[existing];
           if (old is ToolItem && !old.finished) {
             items[existing] =
-                ToolItem(seq: old.seq, callId: callId, name: title ?? name, argsRaw: argsText);
+                ToolItem(seq: old.seq, callId: callId, name: title ?? name, tool: name, argsRaw: argsText);
           }
           return;
         }
@@ -308,6 +315,7 @@ class ChatFold {
           seq: seq,
           callId: callId,
           name: title ?? name,
+          tool: name,
           argsRaw: argsText,
         ));
       case 'tool/result':
@@ -333,7 +341,8 @@ class ChatFold {
         if (viewBody is Map<String, dynamic> && viewBody['output'] is String) {
           preview = viewBody['output'] as String;
         }
-        if (preview != null && preview.length > 500) preview = '${preview.substring(0, 500)}…';
+        // 富文本卡片（read 全文 / bash 输出 / diff）需要更大余量；超出部分截断。
+        if (preview != null && preview.length > 4000) preview = '${preview.substring(0, 4000)}…';
         final idx = _toolIndex[callId];
         if (idx != null && idx >= 0 && idx < items.length) {
           final item = items[idx];

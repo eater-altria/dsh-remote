@@ -245,7 +245,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const NekoMascot(size: 88),
+            const NekoHero(size: 156),
             const SizedBox(height: 12),
             const Text('还没有会话，去发起第一段对话吧'),
             const SizedBox(height: 16),

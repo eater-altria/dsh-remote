@@ -189,8 +189,9 @@ async function handleListDir(req, res) {
 //
 //   POST /__relay/push          {path, title?}  仅 loopback 调用（agent 在本机）
 //   GET  /__relay/files/<id>    下载（?token= 或 x-relay-token 头）
+//   DELETE /__relay/files/<id>  删除暂存文件（App 收件箱删除）
 //   GET  /__relay/outbox        最近的推送列表（App 收件箱/补拉）
-//   WS   /__relay/outbox        推送事件实时广播（{kind:'push', ...meta}）
+//   WS   /__relay/outbox        推送事件实时广播（{kind:'push', ...meta} / {kind:'delete', id}）
 //
 // 暂存目录：~/.dsh/dsh-remote-files/<id>/<原文件名> + meta.json。
 
@@ -269,6 +270,30 @@ async function handleFileDownload(req, res, id) {
   }
 }
 
+async function handleFileDelete(res, id) {
+  if (!/^[A-Za-z0-9-]+$/.test(id)) {
+    res.writeHead(400).end('bad id');
+    return;
+  }
+  try {
+    await fs.rm(path.join(filesStoreDir, id), { recursive: true, force: true });
+    const idx = recentPushes.findIndex((m) => m.id === id);
+    if (idx >= 0) recentPushes.splice(idx, 1);
+    // 广播删除事件，其他在线设备可同步移除。
+    const frame = JSON.stringify({ kind: 'delete', id });
+    for (const socket of outboxSockets) {
+      try {
+        socket.write(encodeWsText(frame));
+      } catch {}
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, id }));
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `delete failed: ${err.message}` }));
+  }
+}
+
 function handleOutboxList(res) {
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ items: recentPushes.slice().reverse() }));
@@ -344,6 +369,10 @@ const server = http.createServer((req, res) => {
   const fileMatch = req.url?.match(/^\/__relay\/files\/([A-Za-z0-9-]+)/);
   if (fileMatch && req.method === 'GET') {
     handleFileDownload(req, res, fileMatch[1]);
+    return;
+  }
+  if (fileMatch && req.method === 'DELETE') {
+    handleFileDelete(res, fileMatch[1]);
     return;
   }
   if (req.url?.startsWith('/__relay/outbox') && req.method === 'GET') {

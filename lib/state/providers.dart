@@ -310,7 +310,12 @@ class RosterNotifier extends Notifier<RosterState> {
       if (_statusListener != null) connection.removeListener(_statusListener!);
     });
 
-    if (connection.status == ConnStatus.connected) unawaited(refresh());
+    if (connection.status == ConnStatus.connected) {
+      // build 返回前 state 尚未初始化，同步调 refresh() 会在读取 state 时抛
+      // StateError 导致首刷丢失（预连接场景必现：多主机时代连接在主机列表页
+      // 就已建立）。推迟到微任务，等首帧状态落地后再拉取。
+      unawaited(Future<void>.microtask(refresh));
+    }
     return RosterState(loading: true);
   }
 
