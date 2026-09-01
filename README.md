@@ -2,24 +2,31 @@
 
 DeepSeek Harness (dsh) 的手机客户端，Flutter 构建。通过局域网连接运行 `dsh web` 的主机，在手机上使用 dsh 的完整会话能力。
 
+## 环境要求
+
+- **dsh ≥ 0.1.2-alpha.3**（typert 新协议 + browser-session 鉴权，在 0.1.2-alpha.3 上实测）。
+  dsh 0.1.2-alpha.2 起旧点式协议被移除，**旧版 App（≤ v1.2.8）无法连接新版 dsh**；
+  反之亦然：本版本 App 不支持 dsh ≤ 0.1.1-rc.2（旧协议宿主请使用 App v1.2.8 及以前版本）。
+- 主机上运行 relay（见快速开始）；手机与主机同一局域网。
+
 ## 架构
 
 ```
-┌──────────┐  envelope RPC (POST /api/<method>)  ┌─────────────────────────┐
-│ 手机 App  │ ◄────────────────────────────────► │ relay/dsh-relay.mjs      │ ──► dsh web
-│ (Flutter)│  WS /api/events.mux + events.host   │ 0.0.0.0:3081            │     127.0.0.1:3080
-│          │  WS /__relay/outbox（文件推送）      │ （Host 头改写穿过 fence）│     （loopback only）
-└──────────┘                                     └─────────────────────────┘
+┌──────────┐  envelope RPC (POST /api/<ns>/<method>) ┌────────────────────────┐
+│ 手机 App  │ ◄────────────────────────────────────► │ relay/dsh-relay.mjs     │ ──► dsh web
+│ (Flutter)│  WS /api/remote.mux（多路复用逻辑流）    │ 0.0.0.0:3081           │     127.0.0.1:3080
+│          │  WS /__relay/outbox（文件推送）          │ （Host 改写+令牌换cookie）│    （loopback only）
+└──────────┘                                        └────────────────────────┘
 ```
 
-- dsh 的 Web 主机只绑定 loopback，且有 Host-header trust fence；relay 把请求转发到 `127.0.0.1:3080` 并把 `Host` 改写为回环地址，手机因此通过校验（loopback-only 的特权方法如 settings.\* 也可用）。
-- 字段级协议参考见 `docs/api-reference.md`（52 RPC 方法 + 事件流 + 错误码）。
+- dsh 的 Web 主机只绑定 loopback，且有 Host-header trust fence；relay 把请求转发到 `127.0.0.1:3080` 并把 `Host` 改写为回环地址，手机因此通过校验。
+- dsh ≥0.1.2 还有 browser-session 鉴权：App 携带启动令牌（`x-dsh-token` 头），relay 用它向上游换取签名 cookie 并缓存复用（见下「DSH 启动令牌」）。
+- 字段级协议参考见 `docs/api-reference-v2.md`（typert RPC + remote.mux 流 + 错误码；旧点式协议见 `docs/api-reference.md`）。
 
 ### relay 自有端点（不经过 host）
 
 | 端点 | 用途 |
 |---|---|
-| `POST /__relay/history.slim` | 历史页瘦身（剥 chunk/replayState，9MB→1.5MB） |
 | `GET /__relay/listDir?path=` | 目录浏览（App 的 Workspace 目录选择器） |
 | `POST /__relay/push` | 文件推送（**仅 loopback**，agent/MCP 用） |
 | `GET /__relay/files/<id>` | 推送文件下载（`?token=` 可鉴权） |
@@ -68,6 +75,14 @@ DSH_RELAY_TOKEN=你的口令 node relay/dsh-relay.mjs
 # App 设置页填入同一令牌；HTTP 与 WebSocket 握手均鉴权
 ```
 
+### DSH 启动令牌（dsh ≥ 0.1.2 必填）
+
+dsh 0.1.2 起 host 开启 browser-session 认证（所有 `/api` 请求与 WS 握手都要签名
+cookie）。把 `dsh web` 启动时打印的 URL 里 `?token=` 后的值填到 App 主机配置的
+「DSH 启动令牌」；App 随请求带 `x-dsh-token` 头，relay 用它向上游换取
+`dsh-auth-*` cookie 并缓存复用（cookie 跨 dsh 重启有效，直到过期；launch token
+每进程随机，dsh 重启后需在 App 里更新令牌才能再次交换）。
+
 ### 文件推送（agent → 手机系统下载器）
 
 对 agent 说「把 xx 推送给我」即可。`push_to_phone` MCP 工具（stdio shim 在
@@ -95,7 +110,7 @@ DSH_RELAY_TOKEN=你的口令 node relay/dsh-relay.mjs
 
 **聊天**
 - 流式回复（chunk 按 index 拼块，40ms 批量冲刷，流式区独立渲染不阻塞列表）
-- 历史分页（slim 瘦身 90%+，isolate 后台解析折叠）、seq 缺口检测自动补拉
+- 历史分页（session/follow 快照 + session/page 翻页，chunkrow 服务端压缩，isolate 后台解析折叠）
 - 上下文占用进度条（contextPressure 投影，三档语义色）、思考过程折叠、工具卡片
 - 图片附件收发、askUserQuestion 交互、工具审批、steer 插队（长按发送）
 - 队列管理、后台任务条、命令与技能 `/` 合并补全、系统注入消息卡片

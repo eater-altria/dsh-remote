@@ -1,4 +1,7 @@
-# DeepSeek Harness (dsh) client↔host Wire API 参考手册
+# DeepSeek Harness (dsh) client↔host Wire API 参考手册（旧版协议，≤0.1.1-rc.2）
+
+> ⚠️ dsh 0.1.2-alpha.2 起协议已更换（typert remote + remote.mux），新版见 `api-reference-v2.md`。
+> 本文件仅保留作历史参考与旧版 host 兼容。
 
 > 面向 Flutter / 手机客户端实现的完整逆向参考。
 > 提取自 dsh 安装产物 `/usr/local/lib/node_modules/@deepseek-ai/dsh/`（版本 `0.1.0-rc.6`），
@@ -83,6 +86,26 @@ dsh 的 client↔host 协议由 **三种载体** 组成，全部挂在同一 HTT
 3. **显式声明**：CLI `dsh --profile web --trusted-host <authority...>`（可重复），或 cordis.yml 中 client-connection 插件配置 `trustedHosts: [...]`。
 
 **注意 CLI 层故意拒绝 `--host 0.0.0.0`**（报错「intentionally not supported yet for safety: it would expose remote code execution to the network」）。要 LAN 暴露只能在 cordis.yml 里把 webserver 绑定改成 `0.0.0.0`。
+
+### browser-session 认证（dsh ≥ 0.1.2 新增，fence 之后的第二道门）
+
+0.1.2 起，trust fence 之外**每个请求（含 WS 握手）还须通过 browser-session 认证**
+（`dsh-client-connection/lib/index.js` 的 `BrowserAuth`）：
+
+- **令牌交换**：`GET /?token=<launchToken>` → `303` + `Set-Cookie: dsh-auth-<b64u(sha256(authority))>=v1.<b64u(payload)>.<b64u(hmac)>`。
+  launchToken 是**每进程随机**的（WeakMap 持有，不持久化），打印在 `dsh web` 启动 URL 里。
+- **cookie 校验**：payload = `{version:1, authority, issuedAt, expiresAt}`，HMAC-SHA256 签名，
+  密钥持久化在 `~/.dsh/.credentials.yaml`（`client-connection/browser-session` 记录，32 字节
+  base64url）——所以**已铸 cookie 跨 dsh 重启仍有效**，直到自身过期（`cookieMaxAgeDays`，默认 30 天）。
+- cookie 绑定 authority（Host 头）：经 relay 访问时 relay 已把 Host 改写为
+  `127.0.0.1:3080`，所以交换与后续请求的 authority 必须一致。
+- 失败一律 `401`（`dsh web authentication required; reopen the URL printed by dsh web.`）。
+
+**relay 的处理**：App 在主机配置里填 launch token，随请求带 `x-dsh-token` 头；
+relay 用 `GET /?token=` 向上游交换 cookie 并缓存（剩余有效期 <5min 才重换），注入所有
+转发请求（HTTP + WS 握手 + slim history）；上游 401 时失效缓存、强制重换并重试一次。
+launch token 在 dsh 重启后失效，但缓存 cookie 未过期时 relay 继续可用；cookie 也过期后
+需在 App 里更新 token。
 
 ### 特权方法（loopback-only 清单）
 
