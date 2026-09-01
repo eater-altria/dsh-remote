@@ -7,8 +7,14 @@
  *   - Forwards every HTTP request to 127.0.0.1:<targetPort> (default 3080),
  *     rewriting the Host header to the loopback authority so the request
  *     passes the host's `/api` browser-trust fence.
- *   - Tunnels WebSocket upgrades (the /api/events.mux and /api/events.host
- *     downlinks) as raw sockets, with the same Host rewrite.
+ *   - Tunnels WebSocket upgrades (the /api/remote.mux downlink) as raw
+ *     sockets, with the same Host rewrite.
+ *   - Upstream auth: dsh ≥ 0.1.2 requires browser-session auth on every
+ *     request (HTTP and WS handshake). The phone app sends the launch token
+ *     (from the `?token=` of the URL printed by `dsh web`) as the
+ *     `x-dsh-token` header; the relay exchanges it upstream for the signed
+ *     `dsh-auth-*` cookie and attaches that cookie to every forwarded
+ *     request, re-exchanging when the cookie goes stale.
  *
  * Usage: node relay/dsh-relay.mjs [listenPort] [targetPort]
  * Env:   DSH_RELAY_PORT, DSH_TARGET_PORT, DSH_TARGET_HOST
@@ -41,8 +47,105 @@ function authorized(req) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 上游 dsh 鉴权（browser-session cookie，dsh ≥ 0.1.2 必需）
+// ---------------------------------------------------------------------------
+//
+// dsh 0.1.2 起，host 的每个请求（/api 与 WS 握手都要）先过 browser-trust
+// fence，再过 browser-session 认证：一个绑定 Host authority 的 HMAC 签名
+// cookie。获取路径与浏览器一致——用 `dsh web` 启动时打印的 launch URL 里的
+// token 交换：
+//
+//   GET http://<host>/?token=<launchToken>  →  303 + Set-Cookie: dsh-auth-*=...
+//
+// App 在主机配置里填该 token，随请求带 `x-dsh-token` 头；relay 用它完成
+// 交换并缓存 cookie。cookie 跨 dsh 重启仍然有效（签名密钥持久化在 host 的
+// 凭据库），直到自身过期；launch token 则是每进程随机，dsh 重启后 App 需要
+// 更新 token 才能再次交换。
+const upstreamAuth = { token: null, cookie: null, expiresAt: 0, pending: null, pendingToken: null };
+
+/** 从入站请求取 dsh launch token（App 通过 x-dsh-token 头携带）。 */
+function extractDshToken(req) {
+  const header = req.headers['x-dsh-token'];
+  return typeof header === 'string' && header !== '' ? header : null;
+}
+
+/** 用 launch token 向上游交换 browser-session cookie。 */
+async function exchangeUpstreamCookie(token) {
+  const res = await fetch(`http://${targetAuthority}/?token=${encodeURIComponent(token)}`, {
+    redirect: 'manual',
+    headers: { host: targetAuthority },
+  });
+  const setCookie = res.headers.get('set-cookie');
+  await res.arrayBuffer().catch(() => {}); // 吸干响应体，释放连接
+  if (res.status !== 303 || !setCookie) {
+    throw new Error(`HTTP ${res.status}（launch token 无效——dsh 重启后需用新 URL 里的 token）`);
+  }
+  const pair = setCookie.split(';')[0];
+  const maxAge = /(?:^|;\s*)Max-Age=(\d+)/i.exec(setCookie);
+  return {
+    cookie: pair,
+    expiresAt: Date.now() + (maxAge ? Number(maxAge[1]) * 1000 : 24 * 3600e3),
+  };
+}
+
+/**
+ * 取可用的上游 cookie：缓存命中（同 token 且剩余有效期 >5min）直接返回，否则
+ * 交换。forceRefresh 用于上游 401 后的强制重换。交换失败但旧 cookie 仍在
+ * 有效期内时继续用旧的——dsh 重启会让 launch token 失效，但已铸 cookie
+ * 未必过期。
+ */
+async function upstreamCookieFor(token, { forceRefresh = false } = {}) {
+  const cache = upstreamAuth;
+  if (!forceRefresh && cache.cookie && cache.token === token && cache.expiresAt - Date.now() > 300e3) {
+    return cache.cookie;
+  }
+  if (!forceRefresh && cache.pending && cache.pendingToken === token) {
+    return cache.pending;
+  }
+  const p = (async () => {
+    try {
+      const fresh = await exchangeUpstreamCookie(token);
+      cache.token = token;
+      cache.cookie = fresh.cookie;
+      cache.expiresAt = fresh.expiresAt;
+      console.log('[auth] exchanged dsh launch token for browser-session cookie');
+      return fresh.cookie;
+    } catch (err) {
+      if (cache.cookie && cache.expiresAt > Date.now()) {
+        console.warn(`[auth] dsh token exchange failed (${err.message}); using cached cookie`);
+        return cache.cookie;
+      }
+      throw err;
+    } finally {
+      if (cache.pending === p) {
+        cache.pending = null;
+        cache.pendingToken = null;
+      }
+    }
+  })();
+  cache.pending = p;
+  cache.pendingToken = token;
+  return p;
+}
+
+/** 缓存的 cookie 被判失效（上游 401）时丢弃，下次请求重新交换。 */
+function invalidateUpstreamCookie(token) {
+  if (upstreamAuth.token === token) {
+    upstreamAuth.cookie = null;
+    upstreamAuth.expiresAt = 0;
+  }
+}
+
+/** 读取完整请求体（有 dsh token 时缓冲，供 401 重试使用）。 */
+async function readBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 /** Headers safe to forward as-is (Host is rewritten separately). */
-function forwardHeaders(req) {
+function forwardHeaders(req, cookie) {
   const headers = { ...req.headers };
   headers.host = targetAuthority;
   // The relay terminates the client TCP connection; do not leak hop-by-hop
@@ -54,73 +157,13 @@ function forwardHeaders(req) {
   delete headers['trailer'];
   delete headers['transfer-encoding'];
   delete headers['upgrade'];
+  // x-dsh-token 是 relay 与 App 之间的凭证，不下泄给 host；host 要的是
+  // 交换来的 browser-session cookie。手机端自身的 cookie 对上游 authority
+  // 无意义，一律替换。
+  delete headers['x-dsh-token'];
+  if (cookie) headers.cookie = cookie;
+  else delete headers.cookie;
   return headers;
-}
-
-/**
- * Relay-side slim history: proxies session.history upstream, strips the
- * transient `assistant/chunk` events and bulky `replayState` blobs from the
- * page before sending it to the phone. A 200-message raw page can be ~9 MB
- * (40k chunk events); the slim form is typically 95%+ smaller, which removes
- * the multi-second UI-thread jsonDecode freeze on the client.
- *
- *   POST /__relay/history.slim
- *   body: { sessionId, beforeSeq?, maxMessages? }
- *   response: the session.history ServerResponse `result.value` (slimmed),
- *             plus `slim: true`.
- */
-async function handleSlimHistory(req, res) {
-  try {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-    const envelope = {
-      type: 'client-request',
-      rpcId: `relay-slim-${Date.now()}`,
-      method: 'session.history',
-      payload: {
-        sessionId: body.sessionId,
-        ...(body.beforeSeq !== undefined ? { beforeSeq: body.beforeSeq } : {}),
-        maxMessages: body.maxMessages ?? 60,
-      },
-    };
-    const upstream = await fetch(`http://${targetAuthority}/api/session.history`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', host: targetAuthority },
-      body: JSON.stringify(envelope),
-    });
-    const text = await upstream.text();
-    if (upstream.status !== 200) {
-      res.writeHead(upstream.status, { 'content-type': 'application/json' });
-      res.end(text);
-      return;
-    }
-    const decoded = JSON.parse(text);
-    const value = decoded?.result?.ok ? decoded.result.value : null;
-    if (!value || !Array.isArray(value.events)) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(text);
-      return;
-    }
-    const slimEvents = [];
-    for (const entry of value.events) {
-      const event = entry?.event;
-      if (!event || event.type === 'assistant/chunk') continue;
-      // replayState 是宿主重放内部状态（可含完整请求体），客户端 fold 用不到。
-      const message = event.data?.message;
-      if (message?.source?.replayState) delete message.source.replayState;
-      slimEvents.push(entry);
-    }
-    const before = text.length;
-    value.events = slimEvents;
-    value.slim = true;
-    console.log(`[slim] ${body.sessionId} max=${envelope.payload.maxMessages}: ${before} -> ${JSON.stringify(value).length} bytes, ${slimEvents.length} events`);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(value));
-  } catch (err) {
-    res.writeHead(502, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: `slim history failed: ${err.message}` }));
-  }
 }
 
 /**
@@ -354,10 +397,6 @@ const server = http.createServer((req, res) => {
     res.end('unauthorized: missing or invalid relay token');
     return;
   }
-  if (req.url === '/__relay/history.slim' && req.method === 'POST') {
-    handleSlimHistory(req, res);
-    return;
-  }
   if (req.url?.startsWith('/__relay/listDir') && req.method === 'GET') {
     handleListDir(req, res);
     return;
@@ -379,25 +418,73 @@ const server = http.createServer((req, res) => {
     handleOutboxList(res);
     return;
   }
-  const upstream = http.request(
-    {
-      host: targetHost,
-      port: targetPort,
-      path: req.url,
-      method: req.method,
-      headers: forwardHeaders(req),
-    },
-    (upRes) => {
-      res.writeHead(upRes.statusCode ?? 502, upRes.headers);
-      upRes.pipe(res);
-    },
-  );
-  upstream.on('error', (err) => {
+  proxyToHost(req, res).catch((err) => {
     if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
     res.end(`relay upstream error: ${err.message}`);
   });
-  req.pipe(upstream);
 });
+
+/**
+ * 透明转发到 host。携带 dsh token 时先交换/复用 browser-session cookie，
+ * 并缓冲请求体以便在上游 401（缓存 cookie 失效）时刷新 cookie 重试一次
+ * ——401 发生在 RPC 分发之前，重放不会重复执行。无 token 时保持原来的
+ * 流式转发（旧版无鉴权 dsh 的行为不变）。
+ */
+async function proxyToHost(req, res) {
+  const dshToken = extractDshToken(req);
+  let cookie = null;
+  let body = null;
+  if (dshToken) {
+    try {
+      cookie = await upstreamCookieFor(dshToken);
+    } catch (err) {
+      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(`dsh upstream auth failed: ${err.message}`);
+      return;
+    }
+    body = await readBody(req);
+  }
+
+  const attempt = (ck) =>
+    new Promise((resolve) => {
+      const headers = forwardHeaders(req, ck);
+      if (body) headers['content-length'] = body.length;
+      const upstream = http.request(
+        {
+          host: targetHost,
+          port: targetPort,
+          path: req.url,
+          method: req.method,
+          headers,
+        },
+        (upRes) => resolve(upRes),
+      );
+      upstream.on('error', () => resolve(null));
+      if (body) upstream.end(body);
+      else req.pipe(upstream);
+    });
+
+  let upRes = await attempt(cookie);
+  if (upRes && upRes.statusCode === 401 && dshToken) {
+    // 吸干 401 响应后强制重换 cookie 再试一次。
+    upRes.resume();
+    await new Promise((resolve) => upRes.on('end', resolve));
+    invalidateUpstreamCookie(dshToken);
+    try {
+      cookie = await upstreamCookieFor(dshToken, { forceRefresh: true });
+    } catch {
+      cookie = null;
+    }
+    upRes = await attempt(cookie);
+  }
+  if (!upRes) {
+    if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' });
+    res.end('relay upstream error: connection failed');
+    return;
+  }
+  res.writeHead(upRes.statusCode ?? 502, upRes.headers);
+  upRes.pipe(res);
+}
 
 server.on('upgrade', (req, socket, head) => {
   if (!authorized(req)) {
@@ -410,9 +497,25 @@ server.on('upgrade', (req, socket, head) => {
     handleOutboxUpgrade(req, socket);
     return;
   }
+  tunnelUpgrade(req, socket, head).catch(() => socket.destroy());
+});
+
+/** WS 隧道：握手前备好上游 cookie；嗅探握手响应，401 则失效缓存 cookie。 */
+async function tunnelUpgrade(req, socket, head) {
+  const dshToken = extractDshToken(req);
+  let cookie = null;
+  if (dshToken) {
+    try {
+      cookie = await upstreamCookieFor(dshToken);
+    } catch (err) {
+      socket.write(`HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain; charset=utf-8\r\n\r\ndsh upstream auth failed: ${err.message}`);
+      socket.destroy();
+      return;
+    }
+  }
   const upstream = net.connect(targetPort, targetHost, () => {
     const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
-    const headers = forwardHeaders(req);
+    const headers = forwardHeaders(req, cookie);
     // Preserve the WebSocket handshake headers verbatim.
     headers.connection = req.headers.connection ?? 'Upgrade';
     headers.upgrade = req.headers.upgrade ?? 'websocket';
@@ -422,12 +525,23 @@ server.on('upgrade', (req, socket, head) => {
     }
     upstream.write(lines.join('\r\n') + '\r\n\r\n');
     if (head?.length) upstream.write(head);
+    if (dshToken) {
+      // 握手 401 = 缓存 cookie 失效：丢弃，下次重连（App 有自动重连）即重新交换。
+      let inspected = false;
+      upstream.on('data', (chunk) => {
+        if (inspected) return;
+        inspected = true;
+        if (/^HTTP\/1\.\d 401/.test(chunk.toString('latin1', 0, 32))) {
+          invalidateUpstreamCookie(dshToken);
+        }
+      });
+    }
     upstream.pipe(socket);
     socket.pipe(upstream);
   });
   upstream.on('error', () => socket.destroy());
   socket.on('error', () => upstream.destroy());
-});
+}
 
 server.listen(listenPort, '0.0.0.0', () => {
   const lanIps = Object.values(os.networkInterfaces())
@@ -436,6 +550,7 @@ server.listen(listenPort, '0.0.0.0', () => {
     .map((i) => i.address);
   console.log(`dsh-remote relay listening on 0.0.0.0:${listenPort} -> ${targetAuthority}`);
   console.log(relayToken ? '  auth: token required (DSH_RELAY_TOKEN)' : '  auth: OPEN (set DSH_RELAY_TOKEN to require a token)');
+  console.log('  upstream: dsh >= 0.1.2 browser-session auth via x-dsh-token header (cookie exchange)');
   for (const ip of lanIps) {
     console.log(`  phone can reach: http://${ip}:${listenPort}`);
   }
