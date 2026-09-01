@@ -44,7 +44,7 @@ class SettingsNamespace {
 final settingsDescribeProvider = FutureProvider<List<SettingsNamespace>>((ref) async {
   final connection = ref.watch(connectionProvider);
   if (connection == null || connection.status != ConnStatus.connected) return const [];
-  final value = await connection.api.rpc('settings.describe');
+  final value = await connection.api.rpc('settings/describe');
   final map = (value as Map).cast<String, dynamic>();
   return (map['namespaces'] as List?)
           ?.whereType<Map<String, dynamic>>()

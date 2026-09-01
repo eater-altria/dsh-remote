@@ -71,7 +71,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (connection == null) return;
     final ok = await launchFileDownload(
       baseUrl: connection.baseUrl,
-      token: connection.token,
       fileId: meta['id'] as String? ?? '',
       fileName: meta['name'] as String? ?? 'download',
       title: meta['title'] as String?,
@@ -313,9 +312,11 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
     if (cancelled) return;
     try {
-      final value = await connection.api.rpc('session.create', {
-        'workspaceId': ?workspaceId,
-        'agentPreset': ?preset,
+      final value = await connection.api.rpc('session/create', {
+        'request': {
+          'workspaceId': ?workspaceId,
+          'agentPreset': ?preset,
+        },
       });
       final sessionId = (value as Map)['sessionId'] as String?;
       if (sessionId != null && context.mounted) {
@@ -340,7 +341,9 @@ class _HomePageState extends ConsumerState<HomePage> {
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     try {
-      await connection.api.rpc('workspace.create', {'path': path});
+      await connection.api.rpc('workspace/create', {
+        'request': {'path': path},
+      });
       await ref.read(rosterProvider.notifier).refresh();
     } catch (e) {
       if (context.mounted) {
@@ -439,9 +442,8 @@ class _WorkspaceHeader extends ConsumerWidget {
           ),
         );
         if (title != null && title.isNotEmpty) {
-          await connection.api.rpc('workspace.rename', {
-            'workspaceId': workspace.workspaceId,
-            'title': title,
+          await connection.api.rpc('workspace/rename', {
+            'request': {'workspaceId': workspace.workspaceId, 'title': title},
           });
         }
       } else if (action == 'delete') {
@@ -459,7 +461,9 @@ class _WorkspaceHeader extends ConsumerWidget {
           ),
         );
         if (confirmed == true) {
-          await connection.api.rpc('workspace.delete', {'workspaceId': workspace.workspaceId});
+          await connection.api.rpc('workspace/delete', {
+            'request': {'workspaceId': workspace.workspaceId},
+          });
         }
       }
       await ref.read(rosterProvider.notifier).refresh();
@@ -590,7 +594,7 @@ class _SessionTile extends ConsumerWidget {
             await renameSession(ref, session.sessionId, title);
           }
         } else if (action == 'archive') {
-          await archiveSession(ref, session.sessionId, archived: true);
+          await archiveSession(ref, session.sessionId);
         }
       },
       ),
@@ -598,7 +602,7 @@ class _SessionTile extends ConsumerWidget {
   }
 }
 
-/// 主机目录浏览器（host.listDirectory 逐级导航），用于新建 Workspace。
+/// 主机目录浏览器（relay listDir / directoryPicker 逐级导航），用于新建 Workspace。
 class _DirectoryPickerDialog extends ConsumerStatefulWidget {
   const _DirectoryPickerDialog();
 

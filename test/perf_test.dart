@@ -3,33 +3,35 @@ import 'dart:io';
 import 'package:dsh_remote/api/fold.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// 性能基准：用真实 host 抓包（含 40k chunk 事件的 9.5MB 历史页 vs relay
-/// slim 后的 1.6MB 页）验证解析+折叠的开销量级。
+/// 性能基准：用真实 host 抓取（session/follow snapshot 与 session/page，
+/// 新协议 records 形状，含 chunkrow 压缩行）验证解析+折叠的开销量级。
 void main() {
-  late String fullBody;
-  late String slimBody;
+  late String snapshotBody;
+  late String pageBody;
 
   setUpAll(() {
-    fullBody = File('test/fixtures/history_full.json').readAsStringSync();
-    slimBody = File('test/fixtures/history_slim.json').readAsStringSync();
+    snapshotBody = File('test/fixtures/history_snapshot.json').readAsStringSync();
+    pageBody = File('test/fixtures/history_page.json').readAsStringSync();
   });
 
-  test('fold slim page (relay 瘦身后的真实数据)', () {
+  test('fold follow snapshot（尾部页 + 投影基线）', () {
     final sw = Stopwatch()..start();
-    final result = parseAndFoldHistory(HistoryFoldTask(body: slimBody, isTail: true));
+    final result = parseAndFoldHistory(HistoryFoldTask(body: snapshotBody, isTail: true));
     sw.stop();
     // ignore: avoid_print
-    print('slim: ${slimBody.length} bytes -> ${result.fold.items.length} items in ${sw.elapsedMilliseconds}ms');
+    print('snapshot: ${snapshotBody.length} bytes -> ${result.fold.items.length} items in ${sw.elapsedMilliseconds}ms');
     expect(result.fold.items, isNotEmpty);
+    expect(result.projections, isNotEmpty);
     expect(sw.elapsedMilliseconds, lessThan(2000));
   });
 
-  test('fold full page (未瘦身的 9.5MB / 40k chunk 事件)', () {
+  test('fold session/page（更早的历史页）', () {
     final sw = Stopwatch()..start();
-    final result = parseAndFoldHistory(HistoryFoldTask(body: fullBody, isTail: true));
+    final result = parseAndFoldHistory(HistoryFoldTask(body: pageBody, isTail: false));
     sw.stop();
     // ignore: avoid_print
-    print('full: ${fullBody.length} bytes -> ${result.fold.items.length} items in ${sw.elapsedMilliseconds}ms');
+    print('page: ${pageBody.length} bytes -> ${result.fold.items.length} items in ${sw.elapsedMilliseconds}ms');
     expect(result.fold.items, isNotEmpty);
+    expect(result.hasMore, isTrue);
   });
 }

@@ -25,14 +25,24 @@ class _FixedConnection extends ConnectionNotifier {
   DshConnection? build() => conn;
 }
 
+/// dsh ≥0.1.2 的 launch token（dsh web 启动 URL 的 ?token=）。
+/// 通过 --dart-define=DSH_TOKEN=... 传入；缺省时跳过活集成测试。
+const kDshToken = String.fromEnvironment('DSH_TOKEN');
+
 void main() {
+  if (kDshToken.isEmpty) {
+    // ignore: avoid_print
+    print('[skip] 未提供 DSH_TOKEN（--dart-define=DSH_TOKEN=...），跳过活集成测试');
+    return;
+  }
+
   HttpOverrides.global = _RealNetwork();
 
   testWidgets('subagent chat page renders without build exceptions', (tester) async {
     await tester.runAsync(() async {
       // 绑定在每个测试里重装 mock，必须在 runAsync 内再覆盖一次。
       HttpOverrides.global = _RealNetwork();
-      final connection = DshConnection('http://127.0.0.1:3081');
+      final connection = DshConnection('http://127.0.0.1:3081', dshToken: kDshToken);
       await connection.connect();
       expect(connection.status, ConnStatus.connected);
 
@@ -56,7 +66,11 @@ void main() {
       // 诊断：输出 chat 状态机快照。
       final container = ProviderScope.containerOf(
           tester.element(find.byType(ChatPage)));
-      final chat = container.read(chatProvider(kChildSession));
+      final chat = container.read(chatProvider(const ChatScope(
+        sessionId: kChildSession,
+        parentSessionId: kParentSession,
+        subagentMode: 'continuable',
+      )));
       debugPrint('[diag] loading=${chat.loadingHistory} items=${chat.items.length} '
           'error=${chat.historyError} title=${chat.title}');
       // 若构建期有异常，ErrorWidget 会出现在树里。
@@ -70,7 +84,7 @@ void main() {
   testWidgets('model sheet exposes reasoning effort entry (parent session)', (tester) async {
     await tester.runAsync(() async {
       HttpOverrides.global = _RealNetwork();
-      final connection = DshConnection('http://127.0.0.1:3081');
+      final connection = DshConnection('http://127.0.0.1:3081', dshToken: kDshToken);
       await connection.connect();
       expect(connection.status, ConnStatus.connected);
 

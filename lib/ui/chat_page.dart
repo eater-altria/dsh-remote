@@ -19,6 +19,10 @@ import 'package:url_launcher/url_launcher.dart';
 class ChatPage extends ConsumerStatefulWidget {
   const ChatPage({super.key, required this.sessionId, this.parentSessionId, this.subagentMode});
 
+  /// 完整的聊天作用域（子代理路由带 parent/mode，chatProvider 的 family 键）。
+  ChatScope get scope =>
+      ChatScope(sessionId: sessionId, parentSessionId: parentSessionId, subagentMode: subagentMode);
+
   final String sessionId;
 
   /// 子代理路由：非空表示这是可续聊子代理，发送/停止走 subagent.* 方法。
@@ -111,8 +115,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
-    final chat = ref.watch(chatProvider(widget.sessionId));
-    final notifier = ref.read(chatProvider(widget.sessionId).notifier);
+    final chat = ref.watch(chatProvider(widget.scope));
+    final notifier = ref.read(chatProvider(widget.scope).notifier);
     _maybeScrollToEnd(chat);
     if (!_entryLogged && !chat.loadingHistory && chat.items.isNotEmpty) {
       _entryLogged = true;
@@ -122,7 +126,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
 
     // 尾部历史页加载完成 → 直接跳到底部（不等动画）。
-    ref.listen(chatProvider(widget.sessionId).select((s) => s.scrollSignal), (_, _) {
+    ref.listen(chatProvider(widget.scope).select((s) => s.scrollSignal), (_, _) {
       _stickToBottom = true;
       // 两帧后列表已完成布局，maxScrollExtent 才是终值。
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -132,13 +136,16 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     });
 
     // Surface pending interactions.
-    ref.listen(chatProvider(widget.sessionId).select((s) => s.pendingQuestion), (_, next) {
+    ref.listen(chatProvider(widget.scope).select((s) => s.pendingQuestion), (_, next) {
       if (next != null) _showQuestionSheet(next);
     });
     // 审批不再弹窗：approval/asked 事件经 fold 落成消息列表里的常驻卡片。
 
     return ProviderScope(
-      overrides: [currentSessionIdProvider.overrideWithValue(widget.sessionId)],
+      overrides: [
+        currentSessionIdProvider.overrideWithValue(widget.sessionId),
+        currentChatScopeProvider.overrideWithValue(widget.scope),
+      ],
       child: Scaffold(
         appBar: AppBar(
           title: Text(chat.title ?? '会话'),
@@ -172,7 +179,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       ),
       body: Column(
         children: [
-          if (chat.goal != null && chat.goal!.exists) _GoalBanner(sessionId: widget.sessionId, goal: chat.goal!),
+          if (chat.goal != null && chat.goal!.exists) _GoalBanner(scope: widget.scope, goal: chat.goal!),
           _PlanBanner(projections: chat.projections),
           _TodoBar(projections: chat.projections),
           Expanded(child: _buildList(chat, notifier)),
@@ -218,7 +225,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // 在列表尾部补一张可交互审批卡。
     final pending = chat.pendingApproval;
     final needsFallbackCard = pending != null &&
-        !chat.items.any((i) => i is ApprovalItem && i.approvalId == pending.approvalId);
+        !chat.items.any((i) => i is ApprovalItem && pending.matches(i.approvalId, i.toolName, i.callId));
     // 尾部行序：审批兜底卡 → 流式 partial（思考过程随对话流滚动，长内容不再挤掉输入框）。
     final tailRows = (needsFallbackCard ? 1 : 0) + (partial != null ? 1 : 0);
     final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + tailRows;
@@ -243,7 +250,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               child: _ApprovalCard(
                 item: ApprovalItem(
                   seq: -1,
-                  approvalId: pending.approvalId,
+                  approvalId: pending.eventId,
                   toolName: pending.toolName,
                   callId: pending.callId,
                   reason: pending.reason,
@@ -580,7 +587,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<void> _onSessionMenu(String value) async {
     switch (value) {
       case 'permission':
-        final permissions = ref.read(chatProvider(widget.sessionId)).projections['permissions'];
+        final permissions = ref.read(chatProvider(widget.scope)).projections['permissions'];
         if (permissions is! Map<String, dynamic>) return;
         final options = (permissions['options'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
         final current = permissions['currentValue'] as String?;
@@ -625,7 +632,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           }
         }
       case 'rename':
-        final controller = TextEditingController(text: ref.read(chatProvider(widget.sessionId)).title);
+        final controller = TextEditingController(text: ref.read(chatProvider(widget.scope)).title);
         final title = await showDialog<String>(
           context: context,
           builder: (context) => AlertDialog(
@@ -653,7 +660,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           }
         }
       case 'archive':
-        await archiveSession(ref, widget.sessionId, archived: true);
+        await archiveSession(ref, widget.sessionId);
         if (mounted) Navigator.of(context).pop();
     }
   }
@@ -719,7 +726,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _showQuestionSheet(PendingQuestion pending) async {
-    final notifier = ref.read(chatProvider(widget.sessionId).notifier);
+    final notifier = ref.read(chatProvider(widget.scope).notifier);
     final answers = await showModalBottomSheet<List<Map<String, dynamic>>>(
       context: context,
       isScrollControlled: true,
@@ -941,17 +948,18 @@ class _ApprovalCard extends ConsumerWidget {
     'unavailable': '已失效',
   };
 
-  Future<void> _answer(WidgetRef ref, String sessionId, bool approved) async {
-    await ref.read(chatProvider(sessionId).notifier).answerApproval(approved);
+  Future<void> _answer(WidgetRef ref, ChatScope scope, bool approved) async {
+    await ref.read(chatProvider(scope).notifier).answerApproval(approved);
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final sessionId = ref.watch(currentSessionIdProvider);
-    final pending = ref.watch(chatProvider(sessionId).select((s) => s.pendingApproval));
-    final interactive = pending != null && pending.approvalId == item.approvalId;
+    final scope = ref.watch(currentChatScopeProvider);
+    final pending = ref.watch(chatProvider(scope).select((s) => s.pendingApproval));
+    // waterfall 请求不带 approvalId，用 toolName+callId 与折叠卡片近似匹配。
+    final interactive = pending != null && pending.matches(item.approvalId, item.toolName, item.callId);
     final outcome = item.outcome;
 
     final (chipLabel, chipColor) = switch (outcome) {
@@ -1000,12 +1008,12 @@ class _ApprovalCard extends ConsumerWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    onPressed: () => _answer(ref, sessionId, false),
+                    onPressed: () => _answer(ref, scope, false),
                     child: const Text('拒绝'),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: () => _answer(ref, sessionId, true),
+                    onPressed: () => _answer(ref, scope, true),
                     child: const Text('批准'),
                   ),
                 ],
@@ -1104,7 +1112,7 @@ class _QueueStrip extends ConsumerWidget {
   void _removeQueueItem(BuildContext context, QueueItem item) {
     // 从最近的 ProviderScope 读取 sessionId 与 notifier。
     final container = ProviderScope.containerOf(context);
-    final sessionId = container.read(currentSessionIdProvider);
+    final scope = container.read(currentChatScopeProvider);
     showModalBottomSheet<void>(
       context: context,
       builder: (context) => SafeArea(
@@ -1113,7 +1121,7 @@ class _QueueStrip extends ConsumerWidget {
           title: const Text('从队列移除'),
           onTap: () {
             Navigator.pop(context);
-            container.read(chatProvider(sessionId).notifier).updateQueueItem(item.id, remove: true);
+            container.read(chatProvider(scope).notifier).updateQueueItem(item.id, remove: true);
           },
         ),
       ),
@@ -1372,9 +1380,9 @@ class _SkillSuggestions extends ConsumerWidget {
 
 /// 进行中的目标横幅（goal 投影驱动）。
 class _GoalBanner extends ConsumerWidget {
-  const _GoalBanner({required this.sessionId, required this.goal});
+  const _GoalBanner({required this.scope, required this.goal});
 
-  final String sessionId;
+  final ChatScope scope;
   final GoalView goal;
 
   @override
@@ -1411,25 +1419,25 @@ class _GoalBanner extends ConsumerWidget {
             IconButton(
               icon: const Icon(Icons.pause, size: 18),
               tooltip: '暂停目标',
-              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('pause'),
+              onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('pause'),
             ),
           if (goal.phase == 'paused' || goal.phase == 'blocked')
             IconButton(
               icon: const Icon(Icons.play_arrow, size: 18),
               tooltip: '恢复目标',
-              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('resume'),
+              onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('resume'),
             ),
           if (goal.phase == 'active' || goal.phase == 'paused')
             IconButton(
               icon: const Icon(Icons.check, size: 18),
               tooltip: '标记完成',
-              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('complete'),
+              onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('complete'),
             ),
           if (goal.phase == 'complete' || goal.phase == 'blocked')
             IconButton(
               icon: const Icon(Icons.close, size: 18),
               tooltip: '关闭目标横幅',
-              onPressed: () => ref.read(chatProvider(sessionId).notifier).goalAction('clear'),
+              onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('clear'),
             ),
         ],
       ),
@@ -1812,7 +1820,7 @@ void _showMessageActions(
             leading: const Icon(Icons.copy_outlined),
             title: const Text('复制全文'),
             onTap: () async {
-              final chat = ref.read(chatProvider(sessionId));
+              final chat = ref.read(chatProvider(ref.watch(currentChatScopeProvider)));
               final item = chat.items.whereType<AssistantItem>().where((i) => i.messageId == messageId).firstOrNull;
               if (item != null) {
                 final text = item.blocks

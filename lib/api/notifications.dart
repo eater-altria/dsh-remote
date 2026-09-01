@@ -1,6 +1,6 @@
 /// 本地通知：会话回合结束（running true→false）时提醒。
 ///
-/// 监听 host downlink 的 `host/session-status` 帧，跟踪每个会话的运行态；
+/// 监听 `$events` 的 `api-session/status` emit，跟踪每个会话的运行态；
 /// 仅在 App 处于后台时发通知（前台时用户已经看得到）。
 library;
 
@@ -8,7 +8,6 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'wire.dart';
 import '../state/providers.dart';
 
 class NotificationService with WidgetsBindingObserver {
@@ -36,12 +35,12 @@ class NotificationService with WidgetsBindingObserver {
         ?.requestNotificationsPermission();
     _initialized = true;
 
-    // 监听连接生命周期：连上后订阅 host 帧。
+    // 监听连接生命周期：连上后订阅事件流。
     _ref.listen(connectionProvider, (_, connection) {
       if (connection == null) return;
-      connection.hostFrames.listen(_onHostFrame);
-      // mux 的 session/projection(title) 用于让通知文案带上会话标题。
-      connection.muxFrames.listen(_onMuxFrame);
+      connection.emits.listen(_onEmit);
+      // session/control 的 title 投影用于让通知文案带上会话标题。
+      connection.followStream('session/control').listen(_onControlFrame, onError: (_) {});
     });
   }
 
@@ -50,22 +49,36 @@ class NotificationService with WidgetsBindingObserver {
     _inForeground = state == AppLifecycleState.resumed;
   }
 
-  void _onMuxFrame(ServerRequestFrame frame) {
-    final payload = frame.payload;
-    if (payload['type'] == 'session/projection' && payload['key'] == 'title') {
-      final sessionId = payload['sessionId'] as String?;
-      final title = payload['value'];
+  void _onControlFrame(dynamic frame) {
+    if (frame is! Map<String, dynamic>) return;
+    if (frame['type'] == 'projection' && frame['key'] == 'title') {
+      final sessionId = frame['sessionId'] as String?;
+      final title = frame['value'];
       if (sessionId != null && title is String && title.isNotEmpty) {
         _titles[sessionId] = title;
+      }
+    } else if (frame['type'] == 'baseline') {
+      final value = (frame['value'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final projections = (value['projections'] as Map?)?.cast<String, dynamic>() ?? const {};
+      for (final entry in projections.entries) {
+        final block = entry.value;
+        if (block is Map<String, dynamic>) {
+          final values = block['values'];
+          if (values is Map<String, dynamic>) {
+            final t = values['title'];
+            if (t is String && t.isNotEmpty) _titles[entry.key] = t;
+          }
+        }
       }
     }
   }
 
-  void _onHostFrame(ServerRequestFrame frame) {
-    final payload = frame.payload;
-    if (payload['type'] != 'host/session-status') return;
-    final sessionId = payload['sessionId'] as String?;
-    final running = payload['running'] as bool?;
+  void _onEmit(Map<String, dynamic> frame) {
+    if (frame['event'] != 'api-session/status') return;
+    final args = frame['args'] as List? ?? const [];
+    if (args.length < 2) return;
+    final sessionId = args[0] as String?;
+    final running = args[1] as bool?;
     if (sessionId == null || running == null) return;
     final was = _running[sessionId] ?? false;
     _running[sessionId] = running;

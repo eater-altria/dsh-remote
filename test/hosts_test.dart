@@ -32,7 +32,7 @@ void main() {
     expect(hosts, hasLength(1));
     expect(hosts.single.url, 'http://192.168.1.5:3081');
     expect(hosts.single.name, '192.168.1.5:3081');
-    expect(hosts.single.token, 'tok');
+    expect(hosts.single.dshToken, '');
 
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString('dsh.serverUrl'), isNull);
@@ -45,11 +45,11 @@ void main() {
     var container = await _makeContainer();
     final added = await container
         .read(hostsProvider.notifier)
-        .add(url: 'http://a.local:3081', name: '', token: 't1');
+        .add(url: 'http://a.local:3081', name: '', dshToken: 'launch-tok');
     expect(added.name, 'a.local:3081'); // 默认名取 host:port
 
     await container.read(hostsProvider.notifier).add(
-        url: 'http://b.local:3081', name: '备用机', token: '');
+        url: 'http://b.local:3081', name: '备用机');
     await container.read(hostsProvider.notifier).update(
           added.copyWith(name: '主力机'),
         );
@@ -60,8 +60,9 @@ void main() {
     final hosts = container.read(hostsProvider)!;
     expect(hosts, hasLength(2));
     expect(hosts[0].name, '主力机');
-    expect(hosts[0].token, 't1');
+    expect(hosts[0].dshToken, 'launch-tok');
     expect(hosts[1].name, '备用机');
+    expect(hosts[1].dshToken, ''); // 旧数据缺字段时回退空串
 
     await container.read(hostsProvider.notifier).remove(hosts[0].id);
     expect(container.read(hostsProvider), hasLength(1));

@@ -11,7 +11,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 连接中与预连接两种进入时序下，会话列表都应自动加载完成。
 class _RealNetwork extends HttpOverrides {}
 
+/// dsh ≥0.1.2 的 launch token（dsh web 启动 URL 的 ?token=）。
+/// 通过 --dart-define=DSH_TOKEN=... 传入；缺省时跳过活集成测试。
+const kDshToken = String.fromEnvironment('DSH_TOKEN');
+
 void main() {
+  if (kDshToken.isEmpty) {
+    // ignore: avoid_print
+    print('[skip] 未提供 DSH_TOKEN（--dart-define=DSH_TOKEN=...），跳过活集成测试');
+    return;
+  }
+
   HttpOverrides.global = _RealNetwork();
 
   testWidgets('连接过程中进入会话列表：connected 后自动加载完成', (tester) async {
@@ -25,7 +35,7 @@ void main() {
 
       final host = await container
           .read(hostsProvider.notifier)
-          .add(url: 'http://127.0.0.1:3081', name: 'local', token: '');
+          .add(url: 'http://127.0.0.1:3081', name: 'local', dshToken: kDshToken);
       await container.read(activeHostIdProvider.notifier).select(host.id);
 
       // 监听 roster 状态迁移。
@@ -63,7 +73,7 @@ void main() {
 
       final host = await container
           .read(hostsProvider.notifier)
-          .add(url: 'http://127.0.0.1:3081', name: 'local', token: '');
+          .add(url: 'http://127.0.0.1:3081', name: 'local', dshToken: kDshToken);
       await container.read(activeHostIdProvider.notifier).select(host.id);
 
       // 关键差异：等连接达到 connected 之后才首次读 rosterProvider

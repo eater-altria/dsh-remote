@@ -127,7 +127,10 @@ class HostsPage extends ConsumerWidget {
                     ),
                     title: Text(host.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Text(
-                      host.token.isEmpty ? host.url : '${host.url} · 已设令牌',
+                      [
+                        host.url,
+                        if (host.dshToken.isNotEmpty) '已设 DSH 令牌',
+                      ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall,

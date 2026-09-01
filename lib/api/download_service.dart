@@ -2,7 +2,6 @@
 ///
 /// Android 上交给系统 DownloadManager（写公共 Downloads 目录 + 通知栏进度，
 /// APK 可直接走系统安装器）；其他平台退回外部浏览器下载。
-/// relay 支持 `?token=` query 鉴权（系统下载器/浏览器无法带自定义头）。
 library;
 
 import 'dart:io';
@@ -15,7 +14,6 @@ const _downloadChannel = MethodChannel('dsh_remote/downloads');
 /// 让系统下载器下载 relay 上暂存的文件。
 Future<bool> launchFileDownload({
   required String baseUrl,
-  required String? token,
   required String fileId,
   required String fileName,
   String? title,
@@ -24,8 +22,7 @@ Future<bool> launchFileDownload({
   while (base.endsWith('/')) {
     base = base.substring(0, base.length - 1);
   }
-  final tokenQuery = token != null && token.isNotEmpty ? '?token=${Uri.encodeQueryComponent(token)}' : '';
-  final url = '$base/__relay/files/$fileId$tokenQuery';
+  final url = '$base/__relay/files/$fileId';
   if (Platform.isAndroid) {
     try {
       await _downloadChannel.invokeMethod('enqueue', {

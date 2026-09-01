@@ -31,16 +31,9 @@ class _InboxPageState extends ConsumerState<InboxPage> {
     setState(() => _future = connection == null ? null : _fetch(connection));
   }
 
-  Map<String, String> get _headers {
-    final token = ref.read(connectionProvider)?.token;
-    return {
-      if (token != null && token.isNotEmpty) 'x-relay-token': token,
-    };
-  }
-
   Future<List<Map<String, dynamic>>> _fetch(DshConnection connection) async {
     final uri = Uri.parse('${connection.baseUrl}/__relay/outbox');
-    final response = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15));
+    final response = await http.get(uri).timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) throw StateError('HTTP ${response.statusCode}');
     final decoded = jsonDecode(utf8.decode(response.bodyBytes));
     return ((decoded as Map)['items'] as List?)?.whereType<Map<String, dynamic>>().toList() ??
@@ -66,7 +59,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
     final id = item['id'] as String? ?? '';
     try {
       final uri = Uri.parse('${connection.baseUrl}/__relay/files/$id');
-      final response = await http.delete(uri, headers: _headers).timeout(const Duration(seconds: 15));
+      final response = await http.delete(uri).timeout(const Duration(seconds: 15));
       if (!mounted) return;
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context)
@@ -157,7 +150,6 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                               onPressed: () async {
                                 final ok = await launchFileDownload(
                                   baseUrl: connection.baseUrl,
-                                  token: connection.token,
                                   fileId: item['id'] as String? ?? '',
                                   fileName: name,
                                   title: item['title'] as String?,

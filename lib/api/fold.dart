@@ -514,7 +514,7 @@ String? _blocksText(dynamic content) {
 class HistoryFoldTask {
   const HistoryFoldTask({required this.body, required this.isTail});
 
-  /// session.history 的 value JSON 字符串（或 relay slim 端点响应体）。
+  /// session/page 的 value JSON 字符串（或 session/follow snapshot 帧）。
   final String body;
   final bool isTail;
 }
@@ -538,15 +538,21 @@ class HistoryFoldResult {
 }
 
 /// 在后台 isolate 中运行：jsonDecode + 全量 fold。
+///
+/// 新版历史形状（session/page value / follow snapshot）：
+/// `{records: [{type:'event', event} | {type:'chunks', event: ChunkRowEvent}], hasMore}`。
+/// chunkrow 压缩行跳过（流式中间态；最终内容由 assistant/message 携带），
+/// 与旧版 slim history 丢 assistant/chunk 同理。
 HistoryFoldResult parseAndFoldHistory(HistoryFoldTask task) {
   final decoded = jsonDecode(task.body);
   final map = decoded is Map<String, dynamic> ? decoded : const <String, dynamic>{};
   final fold = ChatFold();
-  final events = (map['events'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
-  for (final entry in events) {
+  final records = (map['records'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+  for (final entry in records) {
+    if (entry['type'] != 'event') continue; // 跳过 chunkrow 压缩行
     final event = entry['event'];
     if (event is Map<String, dynamic>) {
-      fold.applyEvent(event, view: (entry['view'] as Map?)?.cast<String, dynamic>());
+      fold.applyEvent(event);
     }
   }
   dynamic goalValue;

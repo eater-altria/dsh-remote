@@ -2,34 +2,6 @@
 /// validating side; the client tolerates unknown fields).
 library;
 
-/// `host.describe` response.
-class HostDescription {
-  HostDescription({
-    required this.version,
-    required this.cwd,
-    this.provider,
-    this.model,
-    required this.attachedSessions,
-    required this.canOpenPath,
-  });
-
-  final String version;
-  final String cwd;
-  final String? provider;
-  final String? model;
-  final int attachedSessions;
-  final bool canOpenPath;
-
-  factory HostDescription.fromJson(Map<String, dynamic> json) => HostDescription(
-        version: json['version'] as String? ?? '?',
-        cwd: json['cwd'] as String? ?? '',
-        provider: json['provider'] as String?,
-        model: json['model'] as String?,
-        attachedSessions: (json['attachedSessions'] as num?)?.toInt() ?? 0,
-        canOpenPath: json['canOpenPath'] as bool? ?? false,
-      );
-}
-
 /// `workspace.*` WorkspaceView row.
 class WorkspaceView {
   WorkspaceView({
@@ -142,31 +114,35 @@ class QuestionOption {
       );
 }
 
-/// A pending host-owned interaction surfaced on the mux stream.
+/// A pending host-owned interaction surfaced on the `$events` waterfall stream.
+/// `eventId` + 连接代的 clientId 是应答句柄（`$events/result`）。
 class PendingQuestion {
-  PendingQuestion({required this.rpcId, required this.sessionId, required this.questions});
+  PendingQuestion({required this.eventId, required this.sessionId, required this.questions});
 
-  final String rpcId;
+  final String eventId;
   final String sessionId;
   final List<QuestionItem> questions;
 }
 
 class PendingApproval {
   PendingApproval({
-    required this.rpcId,
+    required this.eventId,
     required this.sessionId,
-    required this.approvalId,
     required this.toolName,
     this.callId,
     this.reason,
   });
 
-  final String rpcId;
+  final String eventId;
   final String sessionId;
-  final String approvalId;
   final String toolName;
   final String? callId;
   final String? reason;
+
+  /// 与折叠卡片（approval/asked 事件的 ApprovalItem）的去重匹配键：
+  /// waterfall 请求不含 approvalId，用 toolName+callId 近似匹配。
+  bool matches(String itemApprovalId, String itemToolName, String? itemCallId) =>
+      toolName == itemToolName && (callId == null || itemCallId == null || callId == itemCallId);
 }
 
 /// One queued-inbox entry from `session/queue` frames.
