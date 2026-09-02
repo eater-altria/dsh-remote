@@ -95,7 +95,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (signature == _lastContentSignature) return;
     _lastContentSignature = signature;
     if (!_stick.stick) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _stick.animateToEnd());
+    // 瞬时跳而不是动画：动画链会跟用户拖拽实时对抗（流式期间钉死底部）。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _stick.jumpToEnd());
   }
 
   void _jumpToEnd() => _stick.jumpToEnd();
@@ -221,7 +222,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // 尾部行序：审批兜底卡 → 流式 partial（思考过程随对话流滚动，长内容不再挤掉输入框）。
     final tailRows = (needsFallbackCard ? 1 : 0) + (partial != null ? 1 : 0);
     final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + tailRows;
-    return NotificationListener<ScrollMetricsNotification>(
+    return NotificationListener<UserScrollNotification>(
+      // 用户一开始拖动就打断程序动画链——流式期间上翻逃逸的关键。
+      onNotification: (n) {
+        _stick.onUserScroll(n.direction);
+        return false;
+      },
+      child: NotificationListener<ScrollMetricsNotification>(
       // 布局增长（图片加载/流式追加）时贴底重跳——这是「进会话不滚到底」的修复点。
       onNotification: (_) {
         _stick.onMetricsChanged();
@@ -271,6 +278,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           },
         );
       },
+        ),
       ),
     );
   }

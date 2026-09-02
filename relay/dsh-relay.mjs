@@ -459,7 +459,25 @@ async function handleRestartDsh(req, res) {
 
 const filesStoreDir = path.join(os.homedir(), '.dsh', 'dsh-remote-files');
 const outboxSockets = new Set();
-const recentPushes = []; // 内存收件箱（最多保留 50 条）
+const recentPushes = []; // 收件箱清单（最多保留 50 条；启动时从暂存目录重建）
+
+/** 从暂存目录重建收件箱清单：relay 重启不清空 App 收件箱。 */
+async function loadRecentPushes() {
+  try {
+    const dirents = await fs.readdir(filesStoreDir, { withFileTypes: true });
+    const metas = [];
+    for (const d of dirents) {
+      if (!d.isDirectory()) continue;
+      try {
+        const meta = JSON.parse(await fs.readFile(path.join(filesStoreDir, d.name, 'meta.json'), 'utf8'));
+        if (typeof meta?.id === 'string' && typeof meta?.ts === 'number') metas.push(meta);
+      } catch {}
+    }
+    metas.sort((a, b) => a.ts - b.ts);
+    recentPushes.push(...metas.slice(-50));
+    if (metas.length > 0) console.log(`[files] restored ${recentPushes.length} inbox entries from disk`);
+  } catch {}
+}
 
 async function handlePush(req, res) {
   // 推送只能由主机本机发起（agent 运行在 host 上）。
@@ -765,6 +783,8 @@ async function tunnelUpgrade(req, socket, head) {
   upstream.on('error', () => socket.destroy());
   socket.on('error', () => upstream.destroy());
 }
+
+await loadRecentPushes();
 
 server.listen(listenPort, '0.0.0.0', () => {
   const lanIps = Object.values(os.networkInterfaces())
