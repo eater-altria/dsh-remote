@@ -611,6 +611,12 @@ function handleOutboxUpgrade(req, socket) {
 }
 
 const server = http.createServer((req, res) => {
+  // push 只接受本机调用（handlePush 内部 loopback 校验），免令牌——
+  // 本机 agent/MCP shim 不带令牌也要能推。
+  if (req.url === '/__relay/push' && req.method === 'POST') {
+    handlePush(req, res);
+    return;
+  }
   if (!authorized(req)) {
     res.writeHead(401, { 'content-type': 'text/plain' });
     res.end('unauthorized: missing or invalid relay token');
@@ -618,10 +624,6 @@ const server = http.createServer((req, res) => {
   }
   if (req.url?.startsWith('/__relay/listDir') && req.method === 'GET') {
     handleListDir(req, res);
-    return;
-  }
-  if (req.url === '/__relay/push' && req.method === 'POST') {
-    handlePush(req, res);
     return;
   }
   if (req.url === '/__relay/restart-dsh' && req.method === 'POST') {
