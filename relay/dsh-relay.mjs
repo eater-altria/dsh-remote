@@ -512,6 +512,8 @@ async function handlePush(req, res) {
 }
 
 async function handleFileDownload(req, res, id) {
+  // 注意别记录 query（含 ?token= 凭证）。
+  console.log(`[files] download ${id} from ${req.socket.remoteAddress}`);
   if (!/^[A-Za-z0-9-]+$/.test(id)) {
     res.writeHead(400).end('bad id');
     return;
