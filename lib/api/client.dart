@@ -26,18 +26,18 @@ enum ConnStatus { disconnected, connecting, connected, reconnecting, failed }
 
 /// Low-level unary RPC against one host base URL.
 class DshApi {
-  DshApi(this.baseUrl, {this.dshToken});
+  DshApi(this.baseUrl, {this.token});
 
   /// e.g. `http://192.168.1.5:3081` (no trailing slash).
   final String baseUrl;
 
-  /// dsh 启动令牌（dsh ≥0.1.2 必需）：`dsh web` 启动 URL 里 `?token=` 的值，
-  /// relay 用它向上游交换 browser-session cookie。
-  final String? dshToken;
+  /// relay 访问令牌：relay 主机上 `~/.dsh-remote/config.json` 里的 token
+  ///（首次启动 relay 时生成并打印）。上游 dsh 鉴权由 relay 自行处理。
+  final String? token;
 
   Map<String, String> get _headers => {
         'content-type': 'application/json',
-        if (dshToken != null && dshToken!.isNotEmpty) 'x-dsh-token': dshToken!,
+        if (token != null && token!.isNotEmpty) 'x-relay-token': token!,
       };
 
   final http.Client _http = http.Client();
@@ -64,6 +64,20 @@ class DshApi {
   }
 
   void dispose() => _http.close();
+
+  /// 让 relay 重启主机上的 dsh（`dsh web --no-open`）。relay 自铸的上游
+  /// cookie 跨重启有效，重连后无需更新令牌。
+  Future<Map<String, dynamic>> restartDsh() async {
+    final response = await _http
+        .post(Uri.parse('$baseUrl/__relay/restart-dsh'), headers: _headers)
+        .timeout(const Duration(seconds: 120));
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    if (response.statusCode != 200) {
+      final error = decoded is Map<String, dynamic> ? decoded['error'] : null;
+      throw RpcException('internal', 'HTTP ${response.statusCode}: ${error ?? response.body}', const {});
+    }
+    return (decoded as Map).cast<String, dynamic>();
+  }
 }
 
 /// One logical stream on the mux socket: items until end/error/cancel.
@@ -197,11 +211,11 @@ class WaterfallRequest {
 /// One live connection to a DSH host: unary RPC + the remote.mux carrier with
 /// automatic reconnect. The `$events` stream is parsed into typed frames.
 class DshConnection extends ChangeNotifier {
-  DshConnection(this.baseUrl, {this.dshToken});
+  DshConnection(this.baseUrl, {this.token});
 
   final String baseUrl;
-  final String? dshToken;
-  late final DshApi api = DshApi(baseUrl, dshToken: dshToken);
+  final String? token;
+  late final DshApi api = DshApi(baseUrl, token: token);
 
   ConnStatus status = ConnStatus.disconnected;
   String? lastError;
@@ -244,7 +258,7 @@ class DshConnection extends ChangeNotifier {
   }
 
   Map<String, String> get _wsHeaders => {
-        if (dshToken != null && dshToken!.isNotEmpty) 'x-dsh-token': dshToken!,
+        if (token != null && token!.isNotEmpty) 'x-relay-token': token!,
       };
 
   /// 在 mux 上开一条逻辑流（连接就绪后调用；重建后需重开）。

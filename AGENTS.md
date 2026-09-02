@@ -5,7 +5,7 @@
 DSH Remote——DeepSeek Harness (dsh) 的 Flutter 手机客户端。仓库内包含：
 
 - `lib/` Flutter App（riverpod 状态层、`lib/api/` 传输与事件折叠、`lib/ui/` 页面）
-- `relay/dsh-relay.mjs` 局域网中继（Host 头改写 + WS 隧道 + 目录浏览/文件推送 + 可选令牌 + x-dsh-token 上游鉴权）
+- `relay/dsh-relay.mjs` 局域网中继（Host 头改写 + WS 隧道 + 目录浏览/文件推送/重启 dsh + ~/.dsh-remote/config.json 令牌鉴权 + 凭据自铸上游 cookie）
 - `docs/api-reference-v2.md` dsh host 的字段级 API 参考（新版 typert 协议；旧版点式协议见 `docs/api-reference.md`）
 
 ## 硬性规则

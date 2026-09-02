@@ -4,9 +4,25 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const relayBase = process.env.DSH_RELAY_URL ?? 'http://127.0.0.1:3081';
-const relayToken = process.env.DSH_RELAY_TOKEN ?? '';
+
+/** relay 访问令牌：环境变量优先，缺省读 ~/.dsh-remote/config.json（relay 首启生成）。 */
+function loadRelayToken() {
+  if (process.env.DSH_RELAY_TOKEN) return process.env.DSH_RELAY_TOKEN;
+  try {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(os.homedir(), '.dsh-remote', 'config.json'), 'utf8'),
+    );
+    return typeof config.token === 'string' ? config.token : '';
+  } catch {
+    return '';
+  }
+}
+const relayToken = loadRelayToken();
 
 const RELAY_DOWN_MSG =
   'dsh-remote relay 未运行。请让用户启动：`node ~/projects/dsh-remote/relay/dsh-relay.mjs`（或确认 launchd 服务 ai.deepseek.dsh-remote-relay 已加载）。';

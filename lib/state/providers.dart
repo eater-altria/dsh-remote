@@ -32,28 +32,28 @@ class HostProfile {
     required this.id,
     required this.name,
     required this.url,
-    this.dshToken = '',
+    this.token = '',
   });
 
   final String id;
   final String name;
   final String url;
-  final String dshToken; // dsh 启动令牌（dsh ≥0.1.2 的 launch URL `?token=`），空串 = 未设置
+  final String token; // relay 访问令牌（主机 ~/.dsh-remote/config.json 的 token），空串 = 未设置
 
-  HostProfile copyWith({String? name, String? url, String? dshToken}) => HostProfile(
+  HostProfile copyWith({String? name, String? url, String? token}) => HostProfile(
         id: id,
         name: name ?? this.name,
         url: url ?? this.url,
-        dshToken: dshToken ?? this.dshToken,
+        token: token ?? this.token,
       );
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'url': url, 'dshToken': dshToken};
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'url': url, 'token': token};
 
   factory HostProfile.fromJson(Map<String, dynamic> json) => HostProfile(
         id: json['id'] as String? ?? '',
         name: json['name'] as String? ?? '',
         url: json['url'] as String? ?? '',
-        dshToken: json['dshToken'] as String? ?? '',
+        token: json['token'] as String? ?? '',
       );
 
   /// 默认显示名：URL 的 host[:port] 部分。
@@ -105,12 +105,12 @@ class HostsNotifier extends Notifier<List<HostProfile>?> {
     state = const [];
   }
 
-  Future<HostProfile> add({required String url, String name = '', String dshToken = ''}) async {
+  Future<HostProfile> add({required String url, String name = '', String token = ''}) async {
     final profile = HostProfile(
       id: mintRpcId(),
       name: name.isEmpty ? HostProfile.defaultName(url) : name,
       url: url,
-      dshToken: dshToken,
+      token: token,
     );
     state = [...?state, profile];
     await _persist();
@@ -218,25 +218,25 @@ final apiFactoryProvider = Provider<DshApi Function(String)>((ref) {
 class ConnectionNotifier extends Notifier<DshConnection?> {
   DshConnection? _connection;
   String? _url;
-  String? _dshToken;
+  String? _token;
 
   @override
   DshConnection? build() {
     final host = ref.watch(activeHostProvider);
     final url = host?.url;
-    final dshToken = (host == null || host.dshToken.isEmpty) ? null : host.dshToken;
+    final token = (host == null || host.token.isEmpty) ? null : host.token;
     // 仅名称等无关字段变化时保留现有连接，不切线。
-    if (url != null && url == _url && dshToken == _dshToken && _connection != null) {
+    if (url != null && url == _url && token == _token && _connection != null) {
       return _connection;
     }
     _connection?.dispose();
     _url = url;
-    _dshToken = dshToken;
+    _token = token;
     if (url == null) {
       _connection = null;
       return null;
     }
-    final connection = DshConnection(url, dshToken: dshToken);
+    final connection = DshConnection(url, token: token);
     _connection = connection;
     unawaited(connection.connect());
     return connection;

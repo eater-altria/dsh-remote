@@ -101,11 +101,11 @@ dsh 的 client↔host 协议由 **三种载体** 组成，全部挂在同一 HTT
   `127.0.0.1:3080`，所以交换与后续请求的 authority 必须一致。
 - 失败一律 `401`（`dsh web authentication required; reopen the URL printed by dsh web.`）。
 
-**relay 的处理**：App 在主机配置里填 launch token，随请求带 `x-dsh-token` 头；
-relay 用 `GET /?token=` 向上游交换 cookie 并缓存（剩余有效期 <5min 才重换），注入所有
-转发请求（HTTP + WS 握手 + slim history）；上游 401 时失效缓存、强制重换并重试一次。
-launch token 在 dsh 重启后失效，但缓存 cookie 未过期时 relay 继续可用；cookie 也过期后
-需在 App 里更新 token。
+**relay 的处理**：同机部署时 relay 直接读本节的签名密钥自铸 cookie（mtime 缓存，
+密钥轮转自愈，跨 dsh 重启免维护）；App 只需携带 `~/.dsh-remote/config.json` 里的
+relay 令牌（`x-relay-token` 头，relay 首启自动生成）。远程 host（relay 与 dsh 不同机）
+退回 launch-token 交换路径（`x-dsh-token` 头，剩余有效期 <5min 重换，上游 401 失效
+重换并重试一次）。
 
 ### 特权方法（loopback-only 清单）
 

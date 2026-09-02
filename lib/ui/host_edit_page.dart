@@ -19,7 +19,7 @@ class HostEditPage extends ConsumerStatefulWidget {
 class _HostEditPageState extends ConsumerState<HostEditPage> {
   late final TextEditingController _nameController;
   late final TextEditingController _urlController;
-  late final TextEditingController _dshTokenController;
+  late final TextEditingController _tokenController;
   bool _testing = false;
   String? _error;
 
@@ -29,14 +29,14 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
     final existing = widget.existing;
     _nameController = TextEditingController(text: existing?.name ?? '');
     _urlController = TextEditingController(text: existing?.url ?? '');
-    _dshTokenController = TextEditingController(text: existing?.dshToken ?? '');
+    _tokenController = TextEditingController(text: existing?.token ?? '');
   }
 
   @override
   void dispose() {
     _nameController.dispose();
     _urlController.dispose();
-    _dshTokenController.dispose();
+    _tokenController.dispose();
     super.dispose();
   }
 
@@ -44,7 +44,7 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
     final url = normalizeBaseUrl(_urlController.text);
     if (url.isEmpty) return;
     final name = _nameController.text.trim();
-    final dshToken = _dshTokenController.text.trim();
+    final token = _tokenController.text.trim();
     final existing = widget.existing;
     setState(() {
       _testing = true;
@@ -54,21 +54,21 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
       // 地址或令牌变化时才探测连通性；仅改名称不阻塞保存。
       final connectionChanged = existing == null ||
           existing.url != url ||
-          existing.dshToken != dshToken;
+          existing.token != token;
       if (connectionChanged) {
         final probe = ref.read(connectionProbeProvider);
-        await probe(url, dshToken: dshToken.isEmpty ? null : dshToken);
+        await probe(url, token: token.isEmpty ? null : token);
       }
       if (existing == null) {
         await ref
             .read(hostsProvider.notifier)
-            .add(url: url, name: name, dshToken: dshToken);
+            .add(url: url, name: name, token: token);
       } else {
         await ref.read(hostsProvider.notifier).update(
               existing.copyWith(
                 name: name.isEmpty ? HostProfile.defaultName(url) : name,
                 url: url,
-                dshToken: dshToken,
+                token: token,
               ),
             );
       }
@@ -116,11 +116,11 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: _dshTokenController,
+                  controller: _tokenController,
                   decoration: const InputDecoration(
-                    labelText: 'DSH 启动令牌（新版 dsh 必填）',
-                    hintText: '`dsh web` 启动 URL 里 ?token= 的值',
-                    prefixIcon: Icon(Icons.verified_user_outlined),
+                    labelText: '访问令牌（必填）',
+                    hintText: '主机 ~/.dsh-remote/config.json 里的 token',
+                    prefixIcon: Icon(Icons.key_outlined),
                   ),
                   obscureText: true,
                   autocorrect: false,
@@ -179,8 +179,8 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                 Text(
                   '提示：在主机上运行 `node relay/dsh-relay.mjs` 启动局域网中继，'
                   '手机与主机连同一 Wi-Fi 后填写中继地址（默认端口 3081）。'
-                  '新版 dsh（≥0.1.2）另需 DSH 启动令牌——dsh 启动时打印的 '
-                  'URL 中 `?token=` 后的部分。',
+                  '访问令牌在 relay 首次启动时生成，见主机 '
+                  '`~/.dsh-remote/config.json` 或 relay 启动日志。',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -198,9 +198,9 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
 /// One-shot probe used by host editing: verifies a basic unary RPC succeeds
 /// against a candidate base URL before the profile is persisted.
 final connectionProbeProvider =
-    Provider<Future<void> Function(String, {String? dshToken})>((ref) {
-      return (String baseUrl, {String? dshToken}) async {
-        final api = DshApi(baseUrl, dshToken: dshToken);
+    Provider<Future<void> Function(String, {String? token})>((ref) {
+      return (String baseUrl, {String? token}) async {
+        final api = DshApi(baseUrl, token: token);
         try {
           // session/list 的 args 键是全 API 唯一的 `_request`（必填）。
           await api.rpc('session/list', {'_request': {}});

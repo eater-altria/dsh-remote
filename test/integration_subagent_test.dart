@@ -25,14 +25,14 @@ class _FixedConnection extends ConnectionNotifier {
   DshConnection? build() => conn;
 }
 
-/// dsh ≥0.1.2 的 launch token（dsh web 启动 URL 的 ?token=）。
-/// 通过 --dart-define=DSH_TOKEN=... 传入；缺省时跳过活集成测试。
-const kDshToken = String.fromEnvironment('DSH_TOKEN');
+/// relay 访问令牌（主机 ~/.dsh-remote/config.json 的 token）。
+/// 通过 --dart-define=RELAY_TOKEN=... 传入；缺省时跳过活集成测试。
+const kRelayToken = String.fromEnvironment('RELAY_TOKEN');
 
 void main() {
-  if (kDshToken.isEmpty) {
+  if (kRelayToken.isEmpty) {
     // ignore: avoid_print
-    print('[skip] 未提供 DSH_TOKEN（--dart-define=DSH_TOKEN=...），跳过活集成测试');
+    print('[skip] 未提供 RELAY_TOKEN（--dart-define=RELAY_TOKEN=...），跳过活集成测试');
     return;
   }
 
@@ -42,7 +42,7 @@ void main() {
     await tester.runAsync(() async {
       // 绑定在每个测试里重装 mock，必须在 runAsync 内再覆盖一次。
       HttpOverrides.global = _RealNetwork();
-      final connection = DshConnection('http://127.0.0.1:3081', dshToken: kDshToken);
+      final connection = DshConnection('http://127.0.0.1:3081', token: kRelayToken);
       await connection.connect();
       expect(connection.status, ConnStatus.connected);
 
@@ -84,7 +84,7 @@ void main() {
   testWidgets('model sheet exposes reasoning effort entry (parent session)', (tester) async {
     await tester.runAsync(() async {
       HttpOverrides.global = _RealNetwork();
-      final connection = DshConnection('http://127.0.0.1:3081', dshToken: kDshToken);
+      final connection = DshConnection('http://127.0.0.1:3081', token: kRelayToken);
       await connection.connect();
       expect(connection.status, ConnStatus.connected);
 

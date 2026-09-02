@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/client.dart';
 import '../state/providers.dart';
 import 'home_page.dart';
 import 'host_edit_page.dart';
@@ -32,6 +33,12 @@ class HostsPage extends ConsumerWidget {
               onTap: () => Navigator.pop(context, 'edit'),
             ),
             ListTile(
+              leading: const Icon(Icons.restart_alt),
+              title: const Text('重启 dsh'),
+              subtitle: const Text('断开全部会话连接，约半分钟后恢复'),
+              onTap: () => Navigator.pop(context, 'restart'),
+            ),
+            ListTile(
               leading: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error),
               title: Text('删除主机', style: TextStyle(color: Theme.of(context).colorScheme.error)),
               onTap: () => Navigator.pop(context, 'delete'),
@@ -45,6 +52,8 @@ class HostsPage extends ConsumerWidget {
       await Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => HostEditPage(existing: host)),
       );
+    } else if (action == 'restart') {
+      await _restartDsh(context, host);
     } else if (action == 'delete') {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -60,6 +69,38 @@ class HostsPage extends ConsumerWidget {
       if (confirmed == true) {
         await ref.read(hostsProvider.notifier).remove(host.id);
       }
+    }
+  }
+
+  /// 重启该主机上的 dsh（relay 代劳：杀旧进程 → `dsh web --no-open` 拉起）。
+  Future<void> _restartDsh(BuildContext context, HostProfile host) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重启 dsh？'),
+        content: Text(
+          '「${host.name}」上的 dsh 会停止并重新启动，所有会话连接中断，'
+          '进行中的回合会被打断。上游鉴权不受影响（relay 自动处理）。',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('重启')),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在重启 dsh…')));
+    final api = DshApi(host.url, token: host.token.isEmpty ? null : host.token);
+    try {
+      final result = await api.restartDsh();
+      messenger.showSnackBar(SnackBar(
+        content: Text(result['ready'] == true ? 'dsh 已重启并就绪' : 'dsh 已启动，等待就绪中…'),
+      ));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('重启失败：$e')));
+    } finally {
+      api.dispose();
     }
   }
 
@@ -129,7 +170,7 @@ class HostsPage extends ConsumerWidget {
                     subtitle: Text(
                       [
                         host.url,
-                        if (host.dshToken.isNotEmpty) '已设 DSH 令牌',
+                        if (host.token.isNotEmpty) '已设令牌',
                       ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,

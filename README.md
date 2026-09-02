@@ -68,20 +68,20 @@ bundle 默认关闭搜索索引（`openAt: never`）。启用（`~/.dsh/profiles
     openAt: first-search   # 首次搜索时才建索引
 ```
 
-### 访问令牌（推荐在不可信网络启用）
+### 访问令牌（必填）
 
-```bash
-DSH_RELAY_TOKEN=你的口令 node relay/dsh-relay.mjs
-# App 设置页填入同一令牌；HTTP 与 WebSocket 握手均鉴权
-```
+relay 的访问令牌持久化在主机 `~/.dsh-remote/config.json`（首次启动自动生成并打印
+到启动日志），把它填到 App 主机配置的「访问令牌」。它独立于 dsh 的 launch token，
+**跨 dsh/relay 重启不变**——dsh 侧的 browser-session cookie 由 relay 直接从
+`~/.dsh/.credentials.yaml` 的签名密钥自铸，dsh 重启后自动恢复，无需任何人工操作。
+（`DSH_RELAY_TOKEN` 环境变量仍可覆盖 config 文件，供调试；relay 指向远程 host 时
+退回 launch-token 交换，App 侧可用 `x-dsh-token` 头携带。）
 
-### DSH 启动令牌（dsh ≥ 0.1.2 必填）
+### 重启 dsh（App 主机菜单）
 
-dsh 0.1.2 起 host 开启 browser-session 认证（所有 `/api` 请求与 WS 握手都要签名
-cookie）。把 `dsh web` 启动时打印的 URL 里 `?token=` 后的值填到 App 主机配置的
-「DSH 启动令牌」；App 随请求带 `x-dsh-token` 头，relay 用它向上游换取
-`dsh-auth-*` cookie 并缓存复用（cookie 跨 dsh 重启有效，直到过期；launch token
-每进程随机，dsh 重启后需在 App 里更新令牌才能再次交换）。
+App 主机列表的「⋯ → 重启 dsh」让 relay 结束当前 dsh 进程并以 `dsh web --no-open`
+重新拉起（保留原 cwd，输出到 `~/.dsh/dsh-relay-dsh.log`）。重启期间所有会话连接
+中断；因上游 cookie 跨重启有效，恢复后 App 自动重连即可。
 
 ### 文件推送（agent → 手机系统下载器）
 

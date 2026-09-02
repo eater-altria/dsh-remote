@@ -23,7 +23,8 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, statSync, readFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -32,10 +33,25 @@ const targetHost = process.argv[3] ?? process.env.DSH_TARGET_HOST ?? '127.0.0.1'
 const targetPort = Number(process.argv[4] ?? process.env.DSH_TARGET_PORT ?? 3080);
 const targetAuthority = `${targetHost}:${targetPort}`;
 
-// 可选访问令牌：relay 会把 Host 改写成回环，等于把 loopback-only 的特权方法
-// 暴露给局域网——设置 DSH_RELAY_TOKEN 后，所有请求（含 WS 握手）必须携带
-// `x-relay-token: <token>` 头或 `?token=<token>` 查询参数。
-const relayToken = process.env.DSH_RELAY_TOKEN ?? null;
+// 访问令牌：relay 会把 Host 改写成回环，等于把 loopback-only 的特权方法
+// 暴露给局域网，因此**始终要求令牌**。令牌持久化在 ~/.dsh-remote/config.json
+//（首次启动自动生成，0600 权限），App 主机配置里填它即可——它独立于 dsh 的
+// launch token，跨 dsh/relay 重启不变。DSH_RELAY_TOKEN 环境变量可覆盖（调试）。
+const configDir = path.join(os.homedir(), '.dsh-remote');
+const configFile = path.join(configDir, 'config.json');
+const relayToken = process.env.DSH_RELAY_TOKEN ?? (await loadOrCreateRelayToken());
+
+async function loadOrCreateRelayToken() {
+  try {
+    const existing = JSON.parse(await fs.readFile(configFile, 'utf8'));
+    if (typeof existing.token === 'string' && existing.token.length >= 16) return existing.token;
+  } catch {}
+  const token = crypto.randomBytes(24).toString('base64url');
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(configFile, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  console.log(`[auth] generated new relay token -> ${configFile}`);
+  return token;
+}
 
 function authorized(req) {
   if (!relayToken) return true;
@@ -53,24 +69,77 @@ function authorized(req) {
 //
 // dsh 0.1.2 起，host 的每个请求（/api 与 WS 握手都要）先过 browser-trust
 // fence，再过 browser-session 认证：一个绑定 Host authority 的 HMAC 签名
-// cookie。获取路径与浏览器一致——用 `dsh web` 启动时打印的 launch URL 里的
-// token 交换：
+// cookie。relay 有两条获取路径：
 //
-//   GET http://<host>/?token=<launchToken>  →  303 + Set-Cookie: dsh-auth-*=...
-//
-// App 在主机配置里填该 token，随请求带 `x-dsh-token` 头；relay 用它完成
-// 交换并缓存 cookie。cookie 跨 dsh 重启仍然有效（签名密钥持久化在 host 的
-// 凭据库），直到自身过期；launch token 则是每进程随机，dsh 重启后 App 需要
-// 更新 token 才能再次交换。
+// 1. **同机部署（默认）**：直接读 dsh 持久化的签名密钥
+//   （~/.dsh/.credentials.yaml 的 client-connection/browser-session 记录），
+//    按 dsh 的 cookie 格式自铸。密钥跨 dsh 重启不变 → 上游鉴权免维护、
+//    跨重启自愈，App 不需要知道 dsh 的 launch token。
+// 2. **远程 host**（DSH_TARGET_HOST 指向别的机器，读不到凭据文件）：退回
+//    launch-token 交换——客户端带 x-dsh-token 头，relay 用 GET /?token=
+//    换 cookie 并缓存（launch token 每进程随机，dsh 重启后失效）。
 const upstreamAuth = { token: null, cookie: null, expiresAt: 0, pending: null, pendingToken: null };
 
-/** 从入站请求取 dsh launch token（App 通过 x-dsh-token 头携带）。 */
+const credentialsFile = process.env.DSH_CREDENTIALS_FILE
+  ?? path.join(process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh'), '.credentials.yaml');
+const isLoopbackTarget = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(targetHost);
+
+function b64url(buf) {
+  return Buffer.from(buf).toString('base64').replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+let credentialCache = { mtimeMs: -1, secret: null };
+
+/** 读取 dsh 凭据文件里的 browser-session 签名密钥（mtime 缓存，轮转自愈）。 */
+function loadSigningSecret() {
+  let stat;
+  try {
+    stat = statSync(credentialsFile);
+  } catch {
+    if (credentialCache.secret) credentialCache = { mtimeMs: -1, secret: null };
+    return credentialCache.secret;
+  }
+  if (stat.mtimeMs === credentialCache.mtimeMs) return credentialCache.secret;
+  let secret = null;
+  try {
+    const text = readFileSync(credentialsFile, 'utf8');
+    const m = text.match(/client-connection\/browser-session:[\s\S]*?secret:\s*([A-Za-z0-9_-]+)/);
+    if (m) {
+      const padded = m[1] + '='.repeat((4 - (m[1].length % 4)) % 4);
+      const decoded = Buffer.from(padded.replaceAll('-', '+').replaceAll('_', '/'), 'base64');
+      if (decoded.length === 32 && b64url(decoded) === m[1]) secret = decoded;
+    }
+  } catch {}
+  credentialCache = { mtimeMs: stat.mtimeMs, secret };
+  return secret;
+}
+
+/**
+ * 按 dsh 的 browser-session cookie 格式自铸（authority = relay 改写后的 Host）。
+ * 每次调用重 stat 凭据文件，密钥轮换（dsh 重置凭据）自动跟随。
+ */
+function mintLocalCookie() {
+  const secret = loadSigningSecret();
+  if (!secret) return null;
+  const name = 'dsh-auth-' + b64url(crypto.createHash('sha256').update(targetAuthority).digest());
+  const now = Date.now();
+  const body = b64url(Buffer.from(JSON.stringify({
+    version: 1,
+    authority: targetAuthority,
+    issuedAt: now,
+    expiresAt: now + 12 * 3600e3, // 12h，远小于 dsh 默认 30 天上限
+  }), 'utf8'));
+  const sig = b64url(crypto.createHmac('sha256', secret).update(body).digest());
+  return `${name}=v1.${body}.${sig}`;
+}
+
+/** 从入站请求取 dsh launch token（远程 host 场景，App 通过 x-dsh-token 头携带）。 */
 function extractDshToken(req) {
   const header = req.headers['x-dsh-token'];
   return typeof header === 'string' && header !== '' ? header : null;
 }
 
-/** 用 launch token 向上游交换 browser-session cookie。 */
+/** 用 launch token 向上游交换 browser-session cookie（远程 host 兜底路径）。 */
 async function exchangeUpstreamCookie(token) {
   const res = await fetch(`http://${targetAuthority}/?token=${encodeURIComponent(token)}`, {
     redirect: 'manual',
@@ -90,9 +159,9 @@ async function exchangeUpstreamCookie(token) {
 }
 
 /**
- * 取可用的上游 cookie：缓存命中（同 token 且剩余有效期 >5min）直接返回，否则
- * 交换。forceRefresh 用于上游 401 后的强制重换。交换失败但旧 cookie 仍在
- * 有效期内时继续用旧的——dsh 重启会让 launch token 失效，但已铸 cookie
+ * launch-token 交换路径的 cookie 缓存：命中（同 token 且剩余有效期 >5min）直接
+ * 返回，否则交换。forceRefresh 用于上游 401 后的强制重换。交换失败但旧 cookie
+ * 仍在有效期内时继续用旧的——dsh 重启会让 launch token 失效，但已铸 cookie
  * 未必过期。
  */
 async function upstreamCookieFor(token, { forceRefresh = false } = {}) {
@@ -129,12 +198,23 @@ async function upstreamCookieFor(token, { forceRefresh = false } = {}) {
   return p;
 }
 
-/** 缓存的 cookie 被判失效（上游 401）时丢弃，下次请求重新交换。 */
+/** 缓存的交换 cookie 被判失效（上游 401）时丢弃，下次请求重新交换。 */
 function invalidateUpstreamCookie(token) {
   if (upstreamAuth.token === token) {
     upstreamAuth.cookie = null;
     upstreamAuth.expiresAt = 0;
   }
+}
+
+/**
+ * 解析本次转发的上游 cookie：客户端带 x-dsh-token 走交换路径（远程 host），
+ * 否则同机部署直接自铸。返回 null 表示无可用凭据（旧版 dsh 无鉴权，直接透传）。
+ */
+async function resolveUpstreamCookie(req, { forceRefresh = false } = {}) {
+  const token = extractDshToken(req);
+  if (token) return upstreamCookieFor(token, { forceRefresh });
+  if (!isLoopbackTarget) return null;
+  return mintLocalCookie();
 }
 
 /** 读取完整请求体（有 dsh token 时缓冲，供 401 重试使用）。 */
@@ -223,6 +303,136 @@ async function handleListDir(req, res) {
   } catch (err) {
     res.writeHead(500, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: `listDir failed: ${err.message}` }));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// dsh 重启（App → relay → 本机 dsh 进程）
+// ---------------------------------------------------------------------------
+//
+//   POST /__relay/restart-dsh   （同其他请求，走 relay 令牌鉴权）
+//
+// 流程：找到监听 targetPort 的 dsh 进程 → 记录其 cwd → SIGTERM（10s 不退
+// 则 SIGKILL）→ 以同一 cwd spawn `dsh web --no-open`（detached，输出进
+// ~/.dsh/dsh-relay-dsh.log）→ 等新 host 监听后返回。上游鉴权无需处理：
+// 自铸 cookie 的签名密钥持久化在凭据文件里，跨重启依然有效。
+//
+// 注意：dsh 重启会杀掉 host 上的一切活跃会话连接（含本 relay 正在服务的
+// 请求）；调用方应把它当「维护操作」对待。若 dsh 由其他 supervisor 托管并
+// 自动拉起，可能与本流程拉起的实例争端口——本部署（dsh-doctor 不托管活跃
+// 子进程）无此问题。
+
+const dshLogFile = process.env.DSH_RESTART_LOG ?? path.join(os.homedir(), '.dsh', 'dsh-relay-dsh.log');
+const restartCommand = process.env.DSH_RESTART_COMMAND ?? 'dsh web --no-open';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 监听指定端口的进程 pid（lsof；macOS/Linux 通用）。找不到返回 null。 */
+async function pidListeningOn(port) {
+  try {
+    const out = await execFileP('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']);
+    const pid = Number(out.trim().split('\n')[0]);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 读取进程的 cwd（lsof -d cwd -Fn 的 n 行）。 */
+async function cwdOfPid(pid) {
+  try {
+    const out = await execFileP('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn']);
+    const line = out.split('\n').find((l) => l.startsWith('n') && l.length > 1 && l[1] === '/');
+    return line ? line.slice(1) : null;
+  } catch {
+    return null;
+  }
+}
+
+function execFileP(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
+}
+
+/** 等端口上的旧进程退出（SIGTERM → 10s 后 SIGKILL）。 */
+async function killPidOnPort(pid, port) {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return; // 已经退了
+  }
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if ((await pidListeningOn(port)) !== pid) return;
+    await sleep(300);
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {}
+  // SIGKILL 后等端口实际释放。
+  const killDeadline = Date.now() + 5_000;
+  while (Date.now() < killDeadline) {
+    if ((await pidListeningOn(port)) == null) return;
+    await sleep(200);
+  }
+  throw new Error(`port ${port} still occupied after SIGKILL`);
+}
+
+let restarting = false;
+
+async function handleRestartDsh(req, res) {
+  if (restarting) {
+    res.writeHead(409, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'restart already in progress' }));
+    return;
+  }
+  restarting = true;
+  const startedAt = Date.now();
+  try {
+    const oldPid = await pidListeningOn(targetPort);
+    const cwd = oldPid ? await cwdOfPid(oldPid) : null;
+    if (oldPid) {
+      console.log(`[restart-dsh] killing pid ${oldPid} (cwd: ${cwd ?? 'unknown'})`);
+      await killPidOnPort(oldPid, targetPort);
+    } else {
+      console.log(`[restart-dsh] no process on port ${targetPort}, starting fresh`);
+    }
+    // detached + 输出进日志：relay 退出后 dsh 继续存活。
+    // 先截断日志，保证日志只含本次启动的输出（排障用）。
+    // 上游鉴权无需处理：自铸 cookie 的签名密钥持久化在凭据文件里，跨重启有效。
+    const out = await fs.open(dshLogFile, 'w');
+    const [cmd, ...args] = restartCommand.split(/\s+/);
+    const child = spawn(cmd, args, {
+      detached: true,
+      stdio: ['ignore', out.fd, out.fd],
+      cwd: cwd ?? os.homedir(),
+      env: process.env,
+    });
+    child.unref();
+    await out.close(); // spawn 已继承 fd 副本，relay 侧可以关闭
+    console.log(`[restart-dsh] spawned '${restartCommand}' as pid ${child.pid}`);
+    // 等新 host 开始监听再返回。
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      if (await pidListeningOn(targetPort)) break;
+      await sleep(500);
+    }
+    const ready = (await pidListeningOn(targetPort)) != null;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      oldPid,
+      newPid: child.pid,
+      cwd: cwd ?? null,
+      ready,
+      ms: Date.now() - startedAt,
+    }));
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `restart-dsh failed: ${err.message}` }));
+  } finally {
+    restarting = false;
   }
 }
 
@@ -405,6 +615,10 @@ const server = http.createServer((req, res) => {
     handlePush(req, res);
     return;
   }
+  if (req.url === '/__relay/restart-dsh' && req.method === 'POST') {
+    handleRestartDsh(req, res);
+    return;
+  }
   const fileMatch = req.url?.match(/^\/__relay\/files\/([A-Za-z0-9-]+)/);
   if (fileMatch && req.method === 'GET') {
     handleFileDownload(req, res, fileMatch[1]);
@@ -425,25 +639,23 @@ const server = http.createServer((req, res) => {
 });
 
 /**
- * 透明转发到 host。携带 dsh token 时先交换/复用 browser-session cookie，
- * 并缓冲请求体以便在上游 401（缓存 cookie 失效）时刷新 cookie 重试一次
- * ——401 发生在 RPC 分发之前，重放不会重复执行。无 token 时保持原来的
- * 流式转发（旧版无鉴权 dsh 的行为不变）。
+ * 透明转发到 host。上游 cookie 由 resolveUpstreamCookie 解析（x-dsh-token
+ * 交换 或 本机凭据自铸）；有 cookie 时缓冲请求体，以便上游 401 时刷新
+ * cookie 重试一次——401 发生在 RPC 分发之前，重放不会重复执行。
+ * 完全无凭据（旧版无鉴权 dsh）时保持原来的流式转发。
  */
 async function proxyToHost(req, res) {
   const dshToken = extractDshToken(req);
   let cookie = null;
   let body = null;
-  if (dshToken) {
-    try {
-      cookie = await upstreamCookieFor(dshToken);
-    } catch (err) {
-      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
-      res.end(`dsh upstream auth failed: ${err.message}`);
-      return;
-    }
-    body = await readBody(req);
+  try {
+    cookie = await resolveUpstreamCookie(req);
+  } catch (err) {
+    res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(`dsh upstream auth failed: ${err.message}`);
+    return;
   }
+  if (cookie) body = await readBody(req);
 
   const attempt = (ck) =>
     new Promise((resolve) => {
@@ -465,13 +677,13 @@ async function proxyToHost(req, res) {
     });
 
   let upRes = await attempt(cookie);
-  if (upRes && upRes.statusCode === 401 && dshToken) {
-    // 吸干 401 响应后强制重换 cookie 再试一次。
+  if (upRes && upRes.statusCode === 401 && cookie) {
+    // 吸干 401 响应后刷新 cookie 再试一次。
     upRes.resume();
     await new Promise((resolve) => upRes.on('end', resolve));
-    invalidateUpstreamCookie(dshToken);
+    if (dshToken) invalidateUpstreamCookie(dshToken);
     try {
-      cookie = await upstreamCookieFor(dshToken, { forceRefresh: true });
+      cookie = await resolveUpstreamCookie(req, { forceRefresh: true });
     } catch {
       cookie = null;
     }
@@ -504,14 +716,12 @@ server.on('upgrade', (req, socket, head) => {
 async function tunnelUpgrade(req, socket, head) {
   const dshToken = extractDshToken(req);
   let cookie = null;
-  if (dshToken) {
-    try {
-      cookie = await upstreamCookieFor(dshToken);
-    } catch (err) {
-      socket.write(`HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain; charset=utf-8\r\n\r\ndsh upstream auth failed: ${err.message}`);
-      socket.destroy();
-      return;
-    }
+  try {
+    cookie = await resolveUpstreamCookie(req);
+  } catch (err) {
+    socket.write(`HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain; charset=utf-8\r\n\r\ndsh upstream auth failed: ${err.message}`);
+    socket.destroy();
+    return;
   }
   const upstream = net.connect(targetPort, targetHost, () => {
     const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`];
@@ -549,8 +759,11 @@ server.listen(listenPort, '0.0.0.0', () => {
     .filter((i) => i && i.family === 'IPv4' && !i.internal)
     .map((i) => i.address);
   console.log(`dsh-remote relay listening on 0.0.0.0:${listenPort} -> ${targetAuthority}`);
-  console.log(relayToken ? '  auth: token required (DSH_RELAY_TOKEN)' : '  auth: OPEN (set DSH_RELAY_TOKEN to require a token)');
-  console.log('  upstream: dsh >= 0.1.2 browser-session auth via x-dsh-token header (cookie exchange)');
+  console.log(`  auth: relay token required (${process.env.DSH_RELAY_TOKEN ? 'DSH_RELAY_TOKEN env' : configFile})`);
+  console.log(`  relay token: ${relayToken}`);
+  console.log(isLoopbackTarget
+    ? '  upstream: browser-session cookie minted from dsh credentials (auto, survives restarts)'
+    : '  upstream: x-dsh-token header -> cookie exchange (remote target)');
   for (const ip of lanIps) {
     console.log(`  phone can reach: http://${ip}:${listenPort}`);
   }
