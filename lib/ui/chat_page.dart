@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../state/providers.dart';
+import 'bottom_stick.dart';
 import 'theme.dart';
 import 'tool_cards.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -37,32 +38,25 @@ class ChatPage extends ConsumerStatefulWidget {
 
 class _ChatPageState extends ConsumerState<ChatPage> {
   final _composer = TextEditingController();
-  final _scroll = ScrollController();
+  final _stick = BottomStickController();
   final List<XFile> _pendingImages = [];
   final Stopwatch _entryWatch = Stopwatch()..start();
   bool _entryLogged = false;
 
-  /// 贴底状态：用户在底部附近时，新内容到达自动跟随；往上翻则停止跟随。
-  bool _stickToBottom = true;
+  ScrollController get _scroll => _stick.scroll;
   int _lastContentSignature = 0;
 
   @override
   void initState() {
     super.initState();
-    _scroll.addListener(_onScroll);
+    _stick.attach();
   }
 
   @override
   void dispose() {
     _composer.dispose();
-    _scroll.dispose();
+    _stick.dispose();
     super.dispose();
-  }
-
-  void _onScroll() {
-    if (!_scroll.hasClients) return;
-    final position = _scroll.position;
-    _stickToBottom = position.pixels >= position.maxScrollExtent - 120;
   }
 
   /// 内容签名：条目数 + 最后一条的长度 + 流式 partial 长度
@@ -99,19 +93,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final signature = _contentSignature(chat);
     if (signature == _lastContentSignature) return;
     _lastContentSignature = signature;
-    if (!_stickToBottom) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd(animate: true));
+    if (!_stick.stick) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _stick.animateToEnd());
   }
 
-  void _jumpToEnd({bool animate = false}) {
-    if (!_scroll.hasClients) return;
-    final target = _scroll.position.maxScrollExtent;
-    if (animate) {
-      _scroll.animateTo(target, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
-    } else {
-      _scroll.jumpTo(target);
-    }
-  }
+  void _jumpToEnd() => _stick.jumpToEnd();
 
   @override
   Widget build(BuildContext context) {
@@ -126,9 +112,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     }
 
     // 尾部历史页加载完成 → 直接跳到底部（不等动画）。
+    // 之后的布局增长（图片加载等）由 BottomStickController 的贴底重跳接管。
     ref.listen(chatProvider(widget.scope).select((s) => s.scrollSignal), (_, _) {
-      _stickToBottom = true;
-      // 两帧后列表已完成布局，maxScrollExtent 才是终值。
+      _stick.stick = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _jumpToEnd();
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());
@@ -229,7 +215,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     // 尾部行序：审批兜底卡 → 流式 partial（思考过程随对话流滚动，长内容不再挤掉输入框）。
     final tailRows = (needsFallbackCard ? 1 : 0) + (partial != null ? 1 : 0);
     final rowCount = chat.items.length + (chat.hasMore ? 1 : 0) + tailRows;
-    return ListView.builder(
+    return NotificationListener<ScrollMetricsNotification>(
+      // 布局增长（图片加载/流式追加）时贴底重跳——这是「进会话不滚到底」的修复点。
+      onNotification: (_) {
+        _stick.onMetricsChanged();
+        return false;
+      },
+      child: ListView.builder(
       controller: _scroll,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       itemCount: rowCount,
@@ -273,6 +265,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           },
         );
       },
+      ),
     );
   }
 

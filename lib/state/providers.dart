@@ -529,6 +529,12 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
   /// 最近一次 follow snapshot 的 cursor（session/page 翻页的 throughSeq 锚点）。
   int _cursor = 0;
 
+  /// snapshot 折叠窗口：isolate 折叠期间到达的直播事件先缓冲，折叠完成
+  /// 整体替换 fold 后再按序补放（否则这些事件会被替换冲掉——它们 seq 在
+  /// snapshot cursor 之后，host 不会重发）。
+  bool _foldingSnapshot = false;
+  final List<Map<String, dynamic>> _bufferedLive = [];
+
   String get _sessionId => arg.sessionId;
 
   /// session/follow 的 address 参数（主会话 or 子代理）。
@@ -602,31 +608,46 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
       case 'event':
         final event = frame['event'];
         if (event is! Map<String, dynamic>) return;
-        if (event['type'] == 'assistant/chunk') {
-          // 流式 chunk 批量合并：40ms 内到达的 chunk 一次应用、一次重建，
-          // 避免逐 token setState 导致的 UI 线程风暴。
-          _pendingChunks.add(event);
-          _chunkFlushTimer ??= Timer(const Duration(milliseconds: 40), _flushChunks);
-        } else {
-          // 非 chunk 事件先冲刷一次积压 chunk，保证应用顺序正确。
-          _flushChunks();
-          final fold = state.fold ?? ChatFold();
-          fold.applyEvent(event, live: true);
-          state = state.copyWith(fold: fold);
+        if (_foldingSnapshot) {
+          _bufferedLive.add(event);
+          return;
         }
+        _applyLiveEvent(event);
+    }
+  }
+
+  void _applyLiveEvent(Map<String, dynamic> event) {
+    if (event['type'] == 'assistant/chunk') {
+      // 流式 chunk 批量合并：40ms 内到达的 chunk 一次应用、一次重建，
+      // 避免逐 token setState 导致的 UI 线程风暴。
+      _pendingChunks.add(event);
+      _chunkFlushTimer ??= Timer(const Duration(milliseconds: 40), _flushChunks);
+    } else {
+      // 非 chunk 事件先冲刷一次积压 chunk，保证应用顺序正确。
+      _flushChunks();
+      final fold = state.fold ?? ChatFold();
+      fold.applyEvent(event, live: true);
+      state = state.copyWith(fold: fold);
     }
   }
 
   /// snapshot 帧 = 尾部历史窗口 + cursor + 投影基线：全量替换当前折叠。
+  /// 折叠（isolate）期间到达的直播事件缓冲在 _bufferedLive，替换完成后按序
+  /// 补放——它们 seq 在 snapshot cursor 之后，host 不会重发，丢了就是缺口。
   Future<void> _applySnapshot(Map<String, dynamic> frame) async {
     final generation = ++_historyGeneration;
+    _foldingSnapshot = true;
     final sw = Stopwatch()..start();
     try {
       final result = await compute(
         parseAndFoldHistory,
         HistoryFoldTask(body: jsonEncode(frame), isTail: true),
       );
-      if (generation != _historyGeneration) return;
+      if (generation != _historyGeneration) {
+        // 本折叠被更新的快照取代：缓冲的事件已被新快照窗口覆盖，丢弃防重放。
+        _bufferedLive.clear();
+        return;
+      }
       debugPrint('[perf] snapshot decode+fold: ${sw.elapsedMilliseconds}ms, ${result.fold.items.length} items');
       _cursor = (frame['cursor'] as num?)?.toInt() ?? 0;
       GoalView? goal = state.goal;
@@ -644,9 +665,20 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
         goal: () => goal,
         projections: result.projections.isNotEmpty ? result.projections : null,
       );
+      // 补放折叠窗口期缓冲的直播事件（按到达序；chunk 走批量合并路径）。
+      final buffered = _bufferedLive.toList();
+      _bufferedLive.clear();
+      for (final event in buffered) {
+        _applyLiveEvent(event);
+      }
     } catch (e) {
-      if (generation != _historyGeneration) return;
+      if (generation != _historyGeneration) {
+        _bufferedLive.clear();
+        return;
+      }
       state = state.copyWith(loadingHistory: false, historyError: () => e.toString());
+    } finally {
+      _foldingSnapshot = false;
     }
   }
 
