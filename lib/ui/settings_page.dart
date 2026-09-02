@@ -322,7 +322,7 @@ class _FieldTile extends ConsumerWidget {
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     try {
-      await connection.api.rpc('settings.update', {
+      await connection.api.rpc('settings/update', {
         'ns': ns,
         'patch': patch,
         'expectedRevision': revision,

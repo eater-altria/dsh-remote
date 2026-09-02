@@ -1476,9 +1476,8 @@ class SessionImage extends ConsumerWidget {
     if (cached != null) return cached;
     final connection = ref.read(connectionProvider);
     if (connection == null) throw StateError('未连接');
-    final value = await connection.api.rpc('session.attachment', {
-      'sessionId': sessionId,
-      'attachmentId': _id,
+    final value = await connection.api.rpc('session/attachment', {
+      'request': {'sessionId': sessionId, 'attachmentId': _id},
     });
     final data = (value as Map)['data'] as String;
     final bytes = base64Decode(data);
