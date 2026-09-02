@@ -71,6 +71,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     if (connection == null) return;
     final ok = await launchFileDownload(
       baseUrl: connection.baseUrl,
+      token: connection.token,
       fileId: meta['id'] as String? ?? '',
       fileName: meta['name'] as String? ?? 'download',
       title: meta['title'] as String?,
