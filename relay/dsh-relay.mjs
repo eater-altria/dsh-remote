@@ -42,13 +42,22 @@ const configFile = path.join(configDir, 'config.json');
 const relayToken = process.env.DSH_RELAY_TOKEN ?? (await loadOrCreateRelayToken());
 
 async function loadOrCreateRelayToken() {
+  // 用户手填的令牌优先：任何非空字符串都接受（重启绝不覆盖用户配置）。
   try {
     const existing = JSON.parse(await fs.readFile(configFile, 'utf8'));
-    if (typeof existing.token === 'string' && existing.token.length >= 16) return existing.token;
+    if (typeof existing.token === 'string' && existing.token.trim() !== '') {
+      if (existing.token.length < 12) {
+        console.warn('[auth] relay token in config is short; consider 16+ random chars');
+      }
+      return existing.token;
+    }
   } catch {}
   const token = crypto.randomBytes(24).toString('base64url');
   await fs.mkdir(configDir, { recursive: true });
-  await fs.writeFile(configFile, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  // 原子写：tmp + rename，避免崩溃留下半个 JSON 导致下次误判重生成。
+  const tmp = `${configFile}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  await fs.rename(tmp, configFile);
   console.log(`[auth] generated new relay token -> ${configFile}`);
   return token;
 }
