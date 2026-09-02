@@ -45,6 +45,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   ScrollController get _scroll => _stick.scroll;
   int _lastContentSignature = 0;
+  bool _didInitialScroll = false;
 
   @override
   void initState() {
@@ -111,10 +112,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       });
     }
 
-    // 尾部历史页加载完成 → 直接跳到底部（不等动画）。
+    // 尾部历史页加载完成 → 首次进入直接跳到底部（不等动画）。
     // 之后的布局增长（图片加载等）由 BottomStickController 的贴底重跳接管。
+    // 注意：重连会产生新快照（scrollSignal 再次触发）——只有首次强制贴底；
+    // 若用户已上翻阅读历史，重连快照不得把视野拽回底部。
     ref.listen(chatProvider(widget.scope).select((s) => s.scrollSignal), (_, _) {
-      _stick.stick = true;
+      final isInitial = !_didInitialScroll;
+      _didInitialScroll = true;
+      if (isInitial) _stick.stick = true;
+      if (!_stick.stick) return;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _jumpToEnd();
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToEnd());

@@ -1159,7 +1159,10 @@ final directoryListingProvider =
   try {
     final uri = Uri.parse('${connection.baseUrl}/__relay/listDir')
         .replace(queryParameters: {'path': ?path});
-    final response = await http.get(uri).timeout(const Duration(seconds: 15));
+    final response = await http.get(uri, headers: {
+      if (connection.token != null && connection.token!.isNotEmpty)
+        'x-relay-token': connection.token!,
+    }).timeout(const Duration(seconds: 15));
     if (response.statusCode == 200) {
       return DirectoryListing.fromJson(
           (jsonDecode(utf8.decode(response.bodyBytes)) as Map).cast<String, dynamic>());

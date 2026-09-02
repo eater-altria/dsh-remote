@@ -378,6 +378,9 @@ class DshConnection extends ChangeNotifier {
   /// relay 的 outbox 推送通道（/__relay/outbox，relay 私有，不过 host）。
   /// 失败静默降级，不参与就绪握手。
   void _openOutboxSocket(int generation) {
+    _pushSub?.cancel();
+    _pushSub = null;
+    _pushSocket = null;
     try {
       final channel = IOWebSocketChannel.connect(
         Uri.parse('$_wsBase/__relay/outbox'),
@@ -395,11 +398,23 @@ class DshConnection extends ChangeNotifier {
             } catch (_) {}
           }
         },
-        onDone: () => _onSocketEnded(generation),
+        onDone: () => _scheduleOutboxReopen(generation),
         onError: (_) {}, // 通道不可用时静默
         cancelOnError: false,
       );
     } catch (_) {}
+  }
+
+  /// outbox 是辅助通道：断了只重开它自己，不拆主连接代
+  ///（否则 relay 重启/网络抖动会触发主连接重建 → 新快照把阅读位置拽回底部）。
+  void _scheduleOutboxReopen(int generation) {
+    if (_disposed || generation != _generation) return;
+    if (status != ConnStatus.connected) return;
+    Future<void>.delayed(const Duration(seconds: 3), () {
+      if (_disposed || generation != _generation) return;
+      if (status != ConnStatus.connected) return;
+      _openOutboxSocket(generation);
+    });
   }
 
   void _onSocketEnded(int generation) {
