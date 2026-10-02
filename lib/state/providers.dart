@@ -15,6 +15,7 @@ import '../api/client.dart';
 import '../api/fold.dart';
 import '../api/models.dart';
 import '../api/wire.dart';
+import 'app_settings.dart';
 
 // ---------------------------------------------------------------------------
 // Host profiles（多主机配置，持久化）
@@ -551,11 +552,17 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
     return {'kind': 'session', 'sessionId': _sessionId};
   }
 
+  /// 按当前界面语言构造折叠器（压缩提示 / 中断标记随语言走）。
+  ChatFold _newFold() {
+    final s = ref.read(stringsProvider);
+    return ChatFold(compactionNotice: s.compactionNotice, interruptedSuffix: s.interruptedSuffix);
+  }
+
   void _flushChunks() {
     _chunkFlushTimer?.cancel();
     _chunkFlushTimer = null;
     if (_pendingChunks.isEmpty) return;
-    final fold = state.fold ?? ChatFold();
+    final fold = state.fold ?? _newFold();
     for (final event in _pendingChunks) {
       fold.applyEvent(event, live: true);
     }
@@ -570,7 +577,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
     _controlSub?.cancel();
     _waterfallSub?.cancel();
     _cancelSub?.cancel();
-    final chat = ChatState(sessionId: arg.sessionId, fold: ChatFold());
+    final chat = ChatState(sessionId: arg.sessionId, fold: _newFold());
     if (connection == null) {
       return chat.copyWith(loadingHistory: false, historyError: () => '未连接');
     }
@@ -625,7 +632,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
     } else {
       // 非 chunk 事件先冲刷一次积压 chunk，保证应用顺序正确。
       _flushChunks();
-      final fold = state.fold ?? ChatFold();
+      final fold = state.fold ?? _newFold();
       fold.applyEvent(event, live: true);
       state = state.copyWith(fold: fold);
     }
@@ -641,7 +648,12 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
     try {
       final result = await compute(
         parseAndFoldHistory,
-        HistoryFoldTask(body: jsonEncode(frame), isTail: true),
+        HistoryFoldTask(
+          body: jsonEncode(frame),
+          isTail: true,
+          compactionNotice: ref.read(stringsProvider).compactionNotice,
+          interruptedSuffix: ref.read(stringsProvider).interruptedSuffix,
+        ),
       );
       if (generation != _historyGeneration) {
         // 本折叠被更新的快照取代：缓冲的事件已被新快照窗口覆盖，丢弃防重放。
@@ -688,7 +700,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
 
   void _onControlFrame(dynamic frame) {
     if (frame is! Map<String, dynamic>) return;
-    final fold = state.fold ?? ChatFold();
+    final fold = state.fold ?? _newFold();
     switch (frame['type']) {
       case 'baseline':
         final value = (frame['value'] as Map?)?.cast<String, dynamic>() ?? const {};
@@ -736,7 +748,7 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
       final g = GoalView.fromProjection(projections['goal']);
       goal = g.exists ? g : null;
     }
-    final fold = state.fold ?? ChatFold();
+    final fold = state.fold ?? _newFold();
     final t = projections['title'];
     if (t is String && t.isNotEmpty) fold.title = t;
     state = state.copyWith(
@@ -835,11 +847,16 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
       if (generation != _historyGeneration) return;
       final result = await compute(
         parseAndFoldHistory,
-        HistoryFoldTask(body: jsonEncode(value), isTail: false),
+        HistoryFoldTask(
+          body: jsonEncode(value),
+          isTail: false,
+          compactionNotice: ref.read(stringsProvider).compactionNotice,
+          interruptedSuffix: ref.read(stringsProvider).interruptedSuffix,
+        ),
       );
       if (generation != _historyGeneration) return;
       // 更早的页面前插到现有列表。
-      final current = state.fold ?? ChatFold();
+      final current = state.fold ?? _newFold();
       current.items = [...result.fold.items, ...current.items];
       state = state.copyWith(fold: current, hasMore: result.hasMore, historyError: () => null);
     } catch (e) {
@@ -894,17 +911,17 @@ class ChatNotifier extends FamilyNotifier<ChatState, ChatScope> {
       final maxBytes = (limits['maxImageBytes'] as num?)?.toInt();
       final maxTotal = (limits['maxMessageImageBytes'] as num?)?.toInt();
       if (maxCount != null && images.length > maxCount) {
-        throw RpcException('attachment-error', '一条消息最多 $maxCount 张图片', const {});
+        throw RpcException('attachment-error', ref.read(stringsProvider).imageTooMany(maxCount), const {});
       }
       final total = images.fold<int>(0, (sum, i) => sum + (i['bytes'] as Uint8List).length);
       for (final image in images) {
         final size = (image['bytes'] as Uint8List).length;
         if (maxBytes != null && size > maxBytes) {
-          throw RpcException('attachment-error', '单张图片超出大小限制', const {});
+          throw RpcException('attachment-error', ref.read(stringsProvider).imageTooLarge, const {});
         }
       }
       if (maxTotal != null && total > maxTotal) {
-        throw RpcException('attachment-error', '图片总大小超出限制', const {});
+        throw RpcException('attachment-error', ref.read(stringsProvider).imagesTooLargeTotal, const {});
       }
     }
     state = state.copyWith(sending: true);

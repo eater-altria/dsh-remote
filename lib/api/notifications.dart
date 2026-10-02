@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 
 class NotificationService with WidgetsBindingObserver {
@@ -21,7 +22,6 @@ class NotificationService with WidgetsBindingObserver {
   bool _initialized = false;
 
   static const _channelId = 'dsh_turn_done';
-  static const _channelName = '回合完成';
 
   Future<void> init() async {
     WidgetsBinding.instance.addObserver(this);
@@ -84,14 +84,16 @@ class NotificationService with WidgetsBindingObserver {
     _running[sessionId] = running;
     // running true→false = 一个回合结束。
     if (was && !running && !_inForeground && _initialized) {
-      final title = _titles[sessionId] ?? '会话';
+      final s = _ref.read(stringsProvider);
+      final title = _titles[sessionId] ?? s.notifSessionFallback;
       _plugin.show(
         sessionId.hashCode,
-        '回合完成',
-        '「$title」的回答已完成',
-        const NotificationDetails(
-          android: AndroidNotificationDetails(_channelId, _channelName, importance: Importance.defaultImportance),
-          iOS: DarwinNotificationDetails(),
+        s.notifTurnDoneTitle,
+        s.notifTurnDoneBody(title),
+        NotificationDetails(
+          android: AndroidNotificationDetails(_channelId, s.notifChannelName,
+              importance: Importance.defaultImportance),
+          iOS: const DarwinNotificationDetails(),
         ),
       );
     }

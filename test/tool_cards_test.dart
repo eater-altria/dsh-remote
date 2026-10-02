@@ -2,6 +2,10 @@ import 'package:dsh_remote/api/fold.dart';
 import 'package:dsh_remote/ui/theme.dart';
 import 'package:dsh_remote/ui/tool_cards.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:dsh_remote/l10n/strings.dart';
+import 'package:dsh_remote/state/app_settings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _colors = CodeColors(
@@ -101,10 +105,12 @@ void main() {
 
   testWidgets('bash 运行中卡片显示等待文案与运行中徽标', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
-        theme: NekoTheme.light(),
-        home: Scaffold(
-          body: BashToolCard(
+      ProviderScope(
+        overrides: [stringsProvider.overrideWithValue(const SZh())],
+        child: MaterialApp(
+          theme: NekoTheme.light(),
+          home: Scaffold(
+            body: BashToolCard(
             item: ToolItem(
               seq: 1,
               callId: 'c1',
@@ -114,6 +120,7 @@ void main() {
             ),
           ),
         ),
+      ),
       ),
     );
     expect(find.text('flutter test'), findsOneWidget);
@@ -126,10 +133,12 @@ void main() {
 
   testWidgets('write 卡片渲染 git 风新增/删除徽标与 diff 行', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
-        theme: NekoTheme.light(),
-        home: Scaffold(
-          body: WriteToolCard(
+      ProviderScope(
+        overrides: [stringsProvider.overrideWithValue(const SZh())],
+        child: MaterialApp(
+          theme: NekoTheme.light(),
+          home: Scaffold(
+            body: WriteToolCard(
             item: ToolItem(
               seq: 1,
               callId: 'c2',
@@ -140,6 +149,7 @@ void main() {
             ),
           ),
         ),
+      ),
       ),
     );
     expect(find.text('写入 a.dart'), findsOneWidget);

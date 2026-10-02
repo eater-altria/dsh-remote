@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../api/client.dart';
 import '../api/download_service.dart';
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 import 'theme.dart';
 
@@ -48,17 +49,18 @@ class _InboxPageState extends ConsumerState<InboxPage> {
   }
 
   Future<void> _delete(Map<String, dynamic> item) async {
+    final s = ref.read(stringsProvider);
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
-    final name = item['name'] as String? ?? '文件';
+    final name = item['name'] as String? ?? s.fileFallback;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除文件'),
-        content: const Text('主机上暂存的文件会被移除；已下载到「下载」目录的副本不受影响。'),
+        title: Text(s.deleteFile),
+        content: Text(s.deleteFileBody),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(s.cancel)),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(s.delete)),
         ],
       ),
     );
@@ -70,27 +72,28 @@ class _InboxPageState extends ConsumerState<InboxPage> {
       if (!mounted) return;
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('已删除 $name')));
+            .showSnackBar(SnackBar(content: Text(s.deletedFile(name))));
         _reload();
       } else {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('删除失败：HTTP ${response.statusCode}')));
+            .showSnackBar(SnackBar(content: Text(s.deleteFailedHttp(response.statusCode))));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败：$e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.deleteFailed(e))));
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final connection = ref.watch(connectionProvider);
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('文件收件箱')),
+      appBar: AppBar(title: Text(s.inboxTitle)),
       body: connection == null
-          ? const Center(child: Text('未连接'))
+          ? Center(child: Text(s.notConnected))
           : FutureBuilder<List<Map<String, dynamic>>>(
               future: _future,
               builder: (context, snap) {
@@ -102,22 +105,22 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text('读取失败：${snap.error}'),
+                        Text(s.inboxReadFailed(snap.error ?? '')),
                         const SizedBox(height: 12),
-                        FilledButton(onPressed: _reload, child: const Text('重试')),
+                        FilledButton(onPressed: _reload, child: Text(s.retry)),
                       ],
                     ),
                   );
                 }
                 final items = snap.data ?? const [];
                 if (items.isEmpty) {
-                  return const Center(
+                  return Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        NekoHero(size: 156),
-                        SizedBox(height: 12),
-                        Text('收件箱是空的'),
+                        const NekoHero(size: 156),
+                        const SizedBox(height: 12),
+                        Text(s.inboxEmpty),
                       ],
                     ),
                   );
@@ -127,7 +130,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                   itemCount: items.length,
                   itemBuilder: (context, i) {
                     final item = items[i];
-                    final name = item['name'] as String? ?? '文件';
+                    final name = item['name'] as String? ?? s.fileFallback;
                     final bytes = (item['bytes'] as num?)?.toInt() ?? 0;
                     final ts = DateTime.fromMillisecondsSinceEpoch(
                         (item['ts'] as num?)?.toInt() ?? 0);
@@ -164,17 +167,17 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                                 );
                                 if (context.mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text(ok ? '已开始下载，进度见通知栏' : '下载失败')),
+                                    SnackBar(content: Text(ok ? s.downloadStarted : s.downloadFailed)),
                                   );
                                 }
                               },
                               icon: const Icon(Icons.download, size: 16),
-                              label: const Text('下载'),
+                              label: Text(s.download),
                             ),
                             IconButton(
                               icon: Icon(Icons.delete_outline,
                                   size: 20, color: theme.colorScheme.error),
-                              tooltip: '删除',
+                              tooltip: s.delete,
                               onPressed: () => _delete(item),
                             ),
                           ],

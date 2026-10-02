@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:dsh_remote/l10n/strings.dart';
+import 'package:dsh_remote/state/app_settings.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +18,7 @@ void main() {
       SharedPreferences.setMockInitialValues({});
       await tester.pumpWidget(
         ProviderScope(
+          overrides: [stringsProvider.overrideWithValue(const SZh())],
           child: MaterialApp(theme: NekoTheme.light(), home: const HostsPage()),
         ),
       );
@@ -142,6 +145,49 @@ void main() {
     expect(tool.name, 'ls'); // 宿主卡片视图的 title 优先
     expect(tool.finished, isTrue);
     expect(tool.resultPreview, 'ok');
+  });
+
+  test('fold pairs tool results (dsh ≥0.1.7 shape: message.toolCallId + text blocks)', () {
+    final fold = ChatFold();
+    fold.applyEvent({
+      'type': 'tool/call',
+      'seq': 17,
+      'time': 0,
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'callId': 'tool_H3aZTt6TAkVWw6HQOH2b3CNC',
+        'name': 'bash',
+        'arguments': '{"command":"ls lib/"}',
+      },
+    });
+    fold.applyEvent({
+      'type': 'tool/result',
+      'seq': 18,
+      'time': 0,
+      'data': {
+        'turn': 1,
+        'step': 1,
+        'message': {
+          'role': 'tool',
+          'source': {'kind': 'tool', 'callId': 'tool_H3aZTt6TAkVWw6HQOH2b3CNC'},
+          'toolCallId': 'tool_H3aZTt6TAkVWw6HQOH2b3CNC',
+          'content': [
+            {'type': 'text', 'text': 'lib/:\napi\nmain.dart'},
+          ],
+          'isError': false,
+          'id': '6d34776b-4f6c-44bc-9dd5-5348aba4a606',
+        },
+        'sourceEventSeqs': [17],
+        'surfaceOp': 'append',
+      },
+    });
+    // 结果必须配对回原工具卡（finished），而不是落一张游离的 result 卡。
+    expect(fold.items, hasLength(1));
+    final tool = fold.items.first as ToolItem;
+    expect(tool.finished, isTrue);
+    expect(tool.isError, isFalse);
+    expect(tool.resultPreview, 'lib/:\napi\nmain.dart');
   });
 
   test('history mode skips assistant/chunk events', () {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/client.dart';
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 import 'theme.dart';
 
@@ -82,10 +83,11 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final isEdit = widget.existing != null;
     return Scaffold(
-      appBar: AppBar(title: Text(isEdit ? '编辑主机' : '添加主机')),
+      appBar: AppBar(title: Text(isEdit ? s.editHost : s.addHost)),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -95,20 +97,20 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
               children: [
                 TextField(
                   controller: _nameController,
-                  decoration: const InputDecoration(
-                    labelText: '名称（可选）',
-                    hintText: '留空则使用主机地址',
-                    prefixIcon: Icon(Icons.label_outline),
+                  decoration: InputDecoration(
+                    labelText: s.hostNameOptional,
+                    hintText: s.hostNameHint,
+                    prefixIcon: const Icon(Icons.label_outline),
                   ),
                   autocorrect: false,
                 ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _urlController,
-                  decoration: const InputDecoration(
-                    labelText: '主机地址',
+                  decoration: InputDecoration(
+                    labelText: s.hostAddress,
                     hintText: '192.168.1.5:3081',
-                    prefixIcon: Icon(Icons.dns_outlined),
+                    prefixIcon: const Icon(Icons.dns_outlined),
                   ),
                   keyboardType: TextInputType.url,
                   autocorrect: false,
@@ -117,10 +119,10 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                 const SizedBox(height: 12),
                 TextField(
                   controller: _tokenController,
-                  decoration: const InputDecoration(
-                    labelText: '访问令牌（必填）',
-                    hintText: '主机 ~/.dsh-remote/config.json 里的 token',
-                    prefixIcon: Icon(Icons.key_outlined),
+                  decoration: InputDecoration(
+                    labelText: s.tokenRequired,
+                    hintText: s.tokenHint,
+                    prefixIcon: const Icon(Icons.key_outlined),
                   ),
                   obscureText: true,
                   autocorrect: false,
@@ -135,7 +137,7 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const PawIcon(size: 18),
-                  label: Text(_testing ? '连接中…' : (isEdit ? '保存' : '测试并添加')),
+                  label: Text(_testing ? s.connecting : (isEdit ? s.save : s.testAndAdd)),
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 16),
@@ -147,7 +149,7 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '连接失败',
+                            s.connectFailed,
                             style: TextStyle(
                               color: theme.colorScheme.onErrorContainer,
                               fontWeight: FontWeight.w700,
@@ -163,8 +165,7 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            '确认 relay 已在主机上运行（launchd 服务或 node relay/dsh-relay.mjs），'
-                            '且手机与主机在同一 Wi-Fi。',
+                            s.connectFailedBody,
                             style: TextStyle(
                               color: theme.colorScheme.onErrorContainer.withValues(alpha: 0.75),
                               fontSize: 11,
@@ -177,10 +178,7 @@ class _HostEditPageState extends ConsumerState<HostEditPage> {
                 ],
                 const SizedBox(height: 32),
                 Text(
-                  '提示：在主机上运行 `node relay/dsh-relay.mjs` 启动局域网中继，'
-                  '手机与主机连同一 Wi-Fi 后填写中继地址（默认端口 3081）。'
-                  '访问令牌在 relay 首次启动时生成，见主机 '
-                  '`~/.dsh-remote/config.json` 或 relay 启动日志。',
+                  s.relayHint,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

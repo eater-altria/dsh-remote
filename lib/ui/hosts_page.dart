@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/client.dart';
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 import 'home_page.dart';
 import 'host_edit_page.dart';
@@ -20,6 +21,7 @@ class HostsPage extends ConsumerWidget {
   }
 
   Future<void> _showHostActions(BuildContext context, WidgetRef ref, HostProfile host) async {
+    final s = ref.read(stringsProvider);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -29,18 +31,18 @@ class HostsPage extends ConsumerWidget {
           children: [
             ListTile(
               leading: const Icon(Icons.edit_outlined),
-              title: const Text('编辑主机'),
+              title: Text(s.editHost),
               onTap: () => Navigator.pop(context, 'edit'),
             ),
             ListTile(
               leading: const Icon(Icons.restart_alt),
-              title: const Text('重启 dsh'),
-              subtitle: const Text('断开全部会话连接，约半分钟后恢复'),
+              title: Text(s.restartDsh),
+              subtitle: Text(s.restartDshDesc),
               onTap: () => Navigator.pop(context, 'restart'),
             ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error),
-              title: Text('删除主机', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              title: Text(s.deleteHost, style: TextStyle(color: Theme.of(context).colorScheme.error)),
               onTap: () => Navigator.pop(context, 'delete'),
             ),
           ],
@@ -53,16 +55,16 @@ class HostsPage extends ConsumerWidget {
         MaterialPageRoute(builder: (_) => HostEditPage(existing: host)),
       );
     } else if (action == 'restart') {
-      await _restartDsh(context, host);
+      await _restartDsh(context, ref, host);
     } else if (action == 'delete') {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('删除主机'),
-          content: Text('删除「${host.name}」的连接配置？此操作不影响主机上的数据。'),
+          title: Text(s.deleteHost),
+          content: Text(s.deleteHostQ(host.name)),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+            TextButton(onPressed: () => Navigator.pop(context, false), child: Text(s.cancel)),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(s.delete)),
           ],
         ),
       );
@@ -73,32 +75,30 @@ class HostsPage extends ConsumerWidget {
   }
 
   /// 重启该主机上的 dsh（relay 代劳：杀旧进程 → `dsh web --no-open` 拉起）。
-  Future<void> _restartDsh(BuildContext context, HostProfile host) async {
+  Future<void> _restartDsh(BuildContext context, WidgetRef ref, HostProfile host) async {
+    final s = ref.read(stringsProvider);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('重启 dsh？'),
-        content: Text(
-          '「${host.name}」上的 dsh 会停止并重新启动，所有会话连接中断，'
-          '进行中的回合会被打断。上游鉴权不受影响（relay 自动处理）。',
-        ),
+        title: Text(s.restartDshQ),
+        content: Text(s.restartDshBody(host.name)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('重启')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(s.cancel)),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(s.restartDsh)),
         ],
       ),
     );
     if (confirmed != true || !context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('正在重启 dsh…')));
+    messenger.showSnackBar(SnackBar(content: Text(s.restartingDsh)));
     final api = DshApi(host.url, token: host.token.isEmpty ? null : host.token);
     try {
       final result = await api.restartDsh();
       messenger.showSnackBar(SnackBar(
-        content: Text(result['ready'] == true ? 'dsh 已重启并就绪' : 'dsh 已启动，等待就绪中…'),
+        content: Text(result['ready'] == true ? s.dshRestarted : s.dshRestartWaiting),
       ));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('重启失败：$e')));
+      messenger.showSnackBar(SnackBar(content: Text(s.restartFailed(e))));
     } finally {
       api.dispose();
     }
@@ -106,15 +106,16 @@ class HostsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final hosts = ref.watch(hostsProvider) ?? const <HostProfile>[];
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('选择主机'),
+        title: Text(s.chooseHost),
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
-            tooltip: '添加主机',
+            tooltip: s.addHost,
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const HostEditPage()),
             ),
@@ -131,7 +132,7 @@ class HostsPage extends ConsumerWidget {
                     const NekoHero(size: 156),
                     const SizedBox(height: 12),
                     Text(
-                      '还没有主机，添加一台开始吧',
+                      s.emptyHosts,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -142,7 +143,7 @@ class HostsPage extends ConsumerWidget {
                         MaterialPageRoute(builder: (_) => const HostEditPage()),
                       ),
                       icon: const Icon(Icons.add, size: 18),
-                      label: const Text('添加主机'),
+                      label: Text(s.addHost),
                     ),
                   ],
                 ),
@@ -170,7 +171,7 @@ class HostsPage extends ConsumerWidget {
                     subtitle: Text(
                       [
                         host.url,
-                        if (host.token.isNotEmpty) '已设令牌',
+                        if (host.token.isNotEmpty) s.tokenSet,
                       ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -178,7 +179,7 @@ class HostsPage extends ConsumerWidget {
                     ),
                     trailing: IconButton(
                       icon: const Icon(Icons.more_vert, size: 20),
-                      tooltip: '更多操作',
+                      tooltip: s.moreActions,
                       onPressed: () => _showHostActions(context, ref, host),
                     ),
                     onTap: () => _enterHost(context, ref, host),

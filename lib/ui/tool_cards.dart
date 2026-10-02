@@ -7,6 +7,9 @@ library;
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../state/app_settings.dart';
 import 'package:highlighting/highlighting.dart';
 
 import '../api/fold.dart';
@@ -287,13 +290,14 @@ class _Chip extends StatelessWidget {
 // bash：终端风面板
 // ---------------------------------------------------------------------------
 
-class BashToolCard extends StatelessWidget {
+class BashToolCard extends ConsumerWidget {
   const BashToolCard({super.key, required this.item});
 
   final ToolItem item;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final args = parseToolArgs(item.argsRaw);
     final command = (args['command'] as String? ?? '').trim();
@@ -307,7 +311,7 @@ class BashToolCard extends StatelessWidget {
       title: title,
       chips: [
         _Chip(
-          label: !item.finished ? '运行中' : (item.isError ? '失败' : '完成'),
+          label: !item.finished ? s.statusRunning : (item.isError ? s.statusFailedBadge : s.statusDone),
           color: color,
         ),
       ],
@@ -351,7 +355,7 @@ class BashToolCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '命令还在终端里奔跑，输出回来就自动补上…',
+                      s.bashWaiting,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: NekoColors.nightInk.withValues(alpha: 0.6),
                       ),
@@ -371,7 +375,7 @@ class BashToolCard extends StatelessWidget {
 // read：路径 + 语法高亮内容
 // ---------------------------------------------------------------------------
 
-class ReadToolCard extends StatelessWidget {
+class ReadToolCard extends ConsumerWidget {
   const ReadToolCard({super.key, required this.item});
 
   final ToolItem item;
@@ -380,7 +384,8 @@ class ReadToolCard extends StatelessWidget {
   static const _maxLines = 60;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final args = parseToolArgs(item.argsRaw);
@@ -438,7 +443,7 @@ class ReadToolCard extends StatelessWidget {
       if (lines.length > _maxLines) {
         rows.add(Padding(
           padding: const EdgeInsets.only(top: 4),
-          child: Text('… 余下 ${lines.length - _maxLines} 行从略',
+          child: Text(s.remainingLines(lines.length - _maxLines),
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: scheme.onSurfaceVariant)),
         ));
@@ -450,7 +455,7 @@ class ReadToolCard extends StatelessWidget {
       iconColor: color,
       title: item.name,
       child: rows.isEmpty
-          ? Text('读取中…',
+          ? Text(s.readingFile,
               style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant))
           : Container(
               width: double.infinity,
@@ -471,7 +476,7 @@ class ReadToolCard extends StatelessWidget {
 // write / edit：git 风 diff 面板
 // ---------------------------------------------------------------------------
 
-class WriteToolCard extends StatelessWidget {
+class WriteToolCard extends ConsumerWidget {
   const WriteToolCard({super.key, required this.item});
 
   final ToolItem item;
@@ -479,7 +484,8 @@ class WriteToolCard extends StatelessWidget {
   static const _maxRows = 120;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final args = parseToolArgs(item.argsRaw);
@@ -535,7 +541,7 @@ class WriteToolCard extends StatelessWidget {
     return ToolCardFrame(
       icon: icon,
       iconColor: color,
-      title: name.isEmpty ? item.name : '写入 $name',
+      title: name.isEmpty ? item.name : s.writeTitle(name),
       chips: [
         if (added > 0) _Chip(label: '+$added', color: scheme.tertiary),
         if (removed > 0) _Chip(label: '−$removed', color: scheme.error),
@@ -554,7 +560,7 @@ class WriteToolCard extends StatelessWidget {
             if (truncated > 0)
               Padding(
                 padding: const EdgeInsets.all(6),
-                child: Text('… 中间 $truncated 行从略',
+                child: Text(s.middleLinesOmitted(truncated),
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: scheme.onSurfaceVariant)),
               ),
