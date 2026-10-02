@@ -239,6 +239,14 @@ endpoint = `session/follow`，args：
 `approval/policy`、`session/title`、`command/run`、`command/done`、`compaction/summary`、
 `goal/change`、`todo/write`、`model/selection`、`agent-preset/selected`、`subagent/descriptor` 等。
 
+**tool/call 与 tool/result 的真实 data 形状（dsh ≥0.1.7 实测）**：
+- `tool/call` data = `{turn, step, callId, name, arguments(JSON 字符串)}`。
+- `tool/result` data = `{turn, step, message, sourceEventSeqs, surfaceOp}`，其中
+  `message = {role:'tool', toolCallId, source:{kind:'tool', callId},
+  content:[{type:'text', text}], isError, id}` —— 配对键在 `message.toolCallId`
+  （或 `message.source.callId`），**不再**是 content 里的 `tool-result` 块
+  （更旧的 host 用后者，客户端需两种都兼容）。
+
 ## 5. session/control 流（队列 + jobs + 投影）
 
 endpoint = `session/control`，payload `{args:{}}`。
@@ -262,6 +270,10 @@ projection values 常见键：`title`、`todos`、`agentPreset`、`modelSelectio
 `sessionStats`、`turnOutline`、`subagentTiming` 等（开放 record 允许扩展）。
 **goal 投影**：`values.goal = {goal:{id,revision,objective,phase:'active'|'paused'|'blocked'|'complete',
 blockedReason?:{code,message},maxGoalRounds}, roundsStarted, createdAt, updatedAt} | null`。
+**permissions 投影**（dsh ≥0.1.7）：`values.permissions = {currentValue}` —— 只剩当前值；
+可选项迁到进程级 unary `permissionPresets/catalog`（无参），返回
+`{options: [{value,name,description?}], defaultOptions, defaultPreset}`。投影键缺失 =
+host 未组合权限服务，客户端应隐藏切换入口。切换仍走 `/permission <preset>` 命令。
 
 ## 6. workspace/follow 流（工作区 roster）
 

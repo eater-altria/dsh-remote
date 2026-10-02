@@ -196,8 +196,22 @@ class NoticeItem extends ChatItem {
   final String text;
 }
 
+/// ChatFold 文案默认值（未注入本地化文案时使用；调用方应按当前语言覆盖）。
+const kDefaultCompactionNotice = '⤬ 上下文已压缩（较早的对话已折叠为摘要）';
+const kDefaultInterruptedSuffix = '\n\n*（回合中断，内容未完整）*';
+
 /// The folded chat surface for one session.
 class ChatFold {
+  ChatFold({
+    String? compactionNotice,
+    String? interruptedSuffix,
+  })  : compactionNotice = compactionNotice ?? kDefaultCompactionNotice,
+        interruptedSuffix = interruptedSuffix ?? kDefaultInterruptedSuffix;
+
+  /// 折叠时烘焙进 NoticeItem / AssistantItem 的本地化文案（由调用方按当前语言注入）。
+  final String compactionNotice;
+  final String interruptedSuffix;
+
   List<ChatItem> items = [];
   bool running = false;
   String? title;
@@ -319,11 +333,20 @@ class ChatFold {
           argsRaw: argsText,
         ));
       case 'tool/result':
-        // 真实结构：data.message.content = [{type:'tool-result', toolCallId, content:[...]}]
+        // 真实结构（dsh ≥0.1.7）：data.message = {role:'tool', toolCallId,
+        // source:{kind:'tool', callId}, content:[{type:'text', text}], isError}；
+        // 更旧的 host 把 toolCallId 放在 content 的 tool-result 块里。
         String callId = '${map['callId'] ?? map['id'] ?? ''}';
         String? preview;
         var isError = map['isError'] == true || map['error'] != null;
         final message = map['message'];
+        if (message is Map<String, dynamic>) {
+          isError = isError || message['isError'] == true;
+          if (callId.isEmpty) {
+            final source = message['source'];
+            callId = '${message['toolCallId'] ?? (source is Map<String, dynamic> ? source['callId'] : null) ?? ''}';
+          }
+        }
         final resultContent = message is Map<String, dynamic> ? message['content'] : map['content'];
         if (resultContent is List) {
           for (final block in resultContent.whereType<Map<String, dynamic>>()) {
@@ -396,7 +419,7 @@ class ChatFold {
         final t = map['title'];
         if (t is String && t.isNotEmpty) title = t;
       case 'compaction/summary':
-        items.add(NoticeItem(seq: seq, text: '⤬ 上下文已压缩（较早的对话已折叠为摘要）'));
+        items.add(NoticeItem(seq: seq, text: compactionNotice));
       case 'command/run':
         // 真实结构：{ commandId, name, args?, source }
         final name = map['name'];
@@ -490,7 +513,7 @@ class ChatFold {
     partial = null;
     items.add(AssistantItem(
       seq: p.seq,
-      blocks: [...p.blocks, const TextBlock('\n\n*（回合中断，内容未完整）*')],
+      blocks: [...p.blocks, TextBlock(interruptedSuffix)],
       messageId: p.messageId,
     ));
   }
@@ -512,11 +535,20 @@ String? _blocksText(dynamic content) {
 /// 历史页解析+折叠的隔离任务输入/输出（后台 isolate 执行，避免 UI 线程
 /// 同步解码数 MB JSON 造成卡顿）。
 class HistoryFoldTask {
-  const HistoryFoldTask({required this.body, required this.isTail});
+  const HistoryFoldTask({
+    required this.body,
+    required this.isTail,
+    this.compactionNotice,
+    this.interruptedSuffix,
+  });
 
   /// session/page 的 value JSON 字符串（或 session/follow snapshot 帧）。
   final String body;
   final bool isTail;
+
+  /// 本地化文案（不传则用 ChatFold 默认）。
+  final String? compactionNotice;
+  final String? interruptedSuffix;
 }
 
 class HistoryFoldResult {
@@ -546,7 +578,10 @@ class HistoryFoldResult {
 HistoryFoldResult parseAndFoldHistory(HistoryFoldTask task) {
   final decoded = jsonDecode(task.body);
   final map = decoded is Map<String, dynamic> ? decoded : const <String, dynamic>{};
-  final fold = ChatFold();
+  final fold = ChatFold(
+    compactionNotice: task.compactionNotice,
+    interruptedSuffix: task.interruptedSuffix,
+  );
   final records = (map['records'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
   for (final entry in records) {
     if (entry['type'] != 'event') continue; // 跳过 chunkrow 压缩行

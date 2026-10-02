@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 import 'bottom_stick.dart';
 import 'theme.dart';
@@ -103,6 +104,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final chat = ref.watch(chatProvider(widget.scope));
     final notifier = ref.read(chatProvider(widget.scope).notifier);
     _maybeScrollToEnd(chat);
@@ -141,31 +143,31 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       ],
       child: Scaffold(
         appBar: AppBar(
-          title: Text(chat.title ?? '会话'),
+          title: Text(chat.title ?? s.sessionTitleFallback),
           bottom: _ContextUsageBar.fromProjections(chat.projections),
         actions: [
           if (chat.running)
             IconButton(
               icon: const Icon(Icons.stop_circle_outlined),
-              tooltip: widget.isContinuableSubagent ? '打断子代理' : '停止当前回合',
+              tooltip: widget.isContinuableSubagent ? s.interruptSubagent : s.stopTurn,
               onPressed: () => widget.isContinuableSubagent
                   ? notifier.interruptSubagent(widget.parentSessionId!)
                   : notifier.cancel(),
             ),
           IconButton(
             icon: const Icon(Icons.model_training),
-            tooltip: '选择模型',
+            tooltip: s.chooseModel,
             onPressed: () => _showModelSheet(),
           ),
           PopupMenuButton<String>(
             onSelected: _onSessionMenu,
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'permission', child: Text('权限模式')),
-              PopupMenuItem(value: 'subagents', child: Text('子代理')),
-              PopupMenuItem(value: 'rename', child: Text('重命名')),
-              PopupMenuItem(value: 'fork', child: Text('分叉会话')),
-              PopupMenuItem(value: 'export', child: Text('导出会话日志')),
-              PopupMenuItem(value: 'archive', child: Text('归档')),
+            itemBuilder: (context) => [
+              PopupMenuItem(value: 'permission', child: Text(s.permissionMode)),
+              PopupMenuItem(value: 'subagents', child: Text(s.subagents)),
+              PopupMenuItem(value: 'rename', child: Text(s.rename)),
+              PopupMenuItem(value: 'fork', child: Text(s.forkSession)),
+              PopupMenuItem(value: 'export', child: Text(s.exportLog)),
+              PopupMenuItem(value: 'archive', child: Text(s.archive)),
             ],
           ),
         ],
@@ -190,6 +192,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Widget _buildList(ChatState chat, ChatNotifier notifier) {
+    final s = ref.watch(stringsProvider);
     final partial = chat.fold?.partial;
     if (chat.loadingHistory && chat.items.isEmpty) {
       return const Center(child: CircularProgressIndicator());
@@ -198,18 +201,18 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text('历史加载失败\n${chat.historyError}', textAlign: TextAlign.center),
+          child: Text(s.historyLoadFailed(chat.historyError ?? ''), textAlign: TextAlign.center),
         ),
       );
     }
     if (chat.items.isEmpty && partial == null) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            NekoHero(size: 156),
-            SizedBox(height: 12),
-            Text('开始新的对话吧'),
+            const NekoHero(size: 156),
+            const SizedBox(height: 12),
+            Text(s.emptyChat),
           ],
         ),
       );
@@ -243,7 +246,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           return Center(
             child: TextButton(
               onPressed: () => notifier.loadOlder(),
-              child: const Text('加载更早的消息'),
+              child: Text(s.loadEarlier),
             ),
           );
         }
@@ -284,12 +287,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _pickImages() async {
+    final s = ref.read(stringsProvider);
     try {
       final picked = await ImagePicker().pickMultiImage(maxWidth: 1600, imageQuality: 85);
       if (picked.isNotEmpty && mounted) setState(() => _pendingImages.addAll(picked));
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('选择图片失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.pickImagesFailed(e))));
       }
     }
   }
@@ -305,6 +309,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Widget _buildComposer(ChatState chat, ChatNotifier notifier) {
+    final s = ref.watch(stringsProvider);
+    final sendMode = ref.watch(sendModeProvider);
     final theme = Theme.of(context);
     return SafeArea(
       top: false,
@@ -356,7 +362,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
               children: [
                 IconButton(
                   icon: const Icon(Icons.add_photo_alternate_outlined),
-                  tooltip: '添加图片',
+                  tooltip: s.addImage,
                   onPressed: _pickImages,
                 ),
                 Expanded(
@@ -366,7 +372,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 maxLines: 6,
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
-                  hintText: chat.running ? '发送将排队；长按 🐾 立即插队（steer）' : '输入消息…',
+                  hintText: chat.running
+                      ? (sendMode == 'steer' ? s.hintRunningSteer : s.hintRunningQueue)
+                      : s.hintInput,
                   border: const OutlineInputBorder(),
                   isDense: true,
                   contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -375,13 +383,15 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             ),
             const SizedBox(width: 8),
             GestureDetector(
-              // 运行中长按 = steering：立即插入当前回合，而不是排队
+              // 长按 = 与设置相反的模式（默认设置排队，长按插队；反之亦然）
               onLongPress: chat.running && !chat.sending && !widget.isContinuableSubagent
-                  ? () => _send(notifier, mode: 'steer')
+                  ? () => _send(notifier, mode: sendMode == 'steer' ? 'queue' : 'steer')
                   : null,
               child: IconButton.filled(
                 style: IconButton.styleFrom(backgroundColor: theme.colorScheme.secondary),
-                onPressed: chat.sending ? null : () => _send(notifier),
+                onPressed: chat.sending
+                    ? null
+                    : () => _send(notifier, mode: chat.running ? sendMode : 'queue'),
                 icon: chat.sending
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : const PawIcon(size: 20),
@@ -417,7 +427,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('发送失败: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(ref.read(stringsProvider).sendFailed(e))));
         _composer.text = text;
       }
     }
@@ -425,7 +436,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   /// 思考强度选择器：返回强度 id，'' = 恢复默认，null = 取消。
   Future<String?> _pickEffort(
-      BuildContext context, List<ModelEffort> efforts, String? current, String? defaultEffort) {
+      BuildContext context, S s, List<ModelEffort> efforts, String? current, String? defaultEffort) {
     return showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -437,7 +448,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             children: [
               Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text('思考强度', style: theme.textTheme.titleMedium),
+                child: Text(s.thinkingEffort, style: theme.textTheme.titleMedium),
               ),
               for (final e in efforts)
                 ListTile(
@@ -451,8 +462,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 ),
               ListTile(
                 dense: true,
-                title: const Text('默认'),
-                subtitle: Text('使用适配器默认（${defaultEffort ?? "适配器决定"}）'),
+                title: Text(s.defaultLabel),
+                subtitle: Text(s.effortDefaultDesc(defaultEffort)),
                 trailing: current == null ? const Icon(Icons.check) : null,
                 onTap: () => Navigator.pop(context, ''),
               ),
@@ -464,6 +475,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _showModelSheet() async {
+    final s = ref.read(stringsProvider);
     // 子代理会话的模型目录被 subagent routing 占用（agent-busy）——优雅提示。
     SessionModels? models;
     try {
@@ -474,7 +486,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     if (!mounted) return;
     if (models == null) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('该会话不支持切换模型（子代理的组合由父会话决定）')));
+          .showSnackBar(SnackBar(content: Text(s.modelNotSwitchable)));
       return;
     }
     final modelsData = models;
@@ -498,20 +510,20 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Text('当前：${modelsData.current.provider} / ${modelsData.current.model}'
-                  '${modelsData.routable ? '' : '（当前 provider 不可路由）'}'),
+              child: Text(s.currentModel(modelsData.current.provider, modelsData.current.model) +
+                  (modelsData.routable ? '' : s.providerNotRoutable)),
             ),
             if (currentEfforts.isNotEmpty)
               ListTile(
                 leading: Icon(Icons.psychology_outlined, color: theme.colorScheme.primary),
-                title: const Text('思考强度'),
+                title: Text(s.thinkingEffort),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
                       modelsData.current.reasoningEffort ??
                           currentModel?.reasoning?.defaultEffort ??
-                          '默认',
+                          s.defaultLabel,
                       style: theme.textTheme.bodyMedium
                           ?.copyWith(color: theme.colorScheme.primary, fontWeight: FontWeight.w600),
                     ),
@@ -522,6 +534,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 onTap: () async {
                   final effort = await _pickEffort(
                     context,
+                    s,
                     currentEfforts,
                     modelsData.current.reasoningEffort,
                     currentModel?.reasoning?.defaultEffort,
@@ -540,7 +553,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   } catch (e) {
                     if (context.mounted) {
                       ScaffoldMessenger.of(context)
-                          .showSnackBar(SnackBar(content: Text('切换思考强度失败: $e')));
+                          .showSnackBar(SnackBar(content: Text(s.setEffortFailed(e))));
                     }
                   }
                 },
@@ -578,7 +591,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     final efforts = selected.reasoning?.efforts ?? const <ModelEffort>[];
     if (efforts.isNotEmpty && mounted) {
       final chosen = await _pickEffort(
-          context, efforts, modelsData.current.reasoningEffort, selected.reasoning?.defaultEffort);
+          context, s, efforts, modelsData.current.reasoningEffort, selected.reasoning?.defaultEffort);
       if (chosen == null) return;
       effort = chosen.isEmpty ? null : chosen;
     }
@@ -586,18 +599,33 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       await selectModel(ref, widget.sessionId, provider, selected.id, reasoningEffort: effort);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换模型失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.setModelFailed(e))));
       }
     }
   }
 
   Future<void> _onSessionMenu(String value) async {
+    final s = ref.read(stringsProvider);
     switch (value) {
       case 'permission':
         final permissions = ref.read(chatProvider(widget.scope)).projections['permissions'];
         if (permissions is! Map<String, dynamic>) return;
-        final options = (permissions['options'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+        var options = (permissions['options'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
         final current = permissions['currentValue'] as String?;
+        // dsh ≥0.1.7 起，可选项从会话投影迁出，改由进程级 permissionPresets/catalog
+        // 提供（投影只剩 currentValue）。投影里没有 options 时回退到该端点拉取。
+        if (options.isEmpty) {
+          final connection = ref.read(connectionProvider);
+          if (connection == null) return;
+          try {
+            final catalog = await connection.api.rpc('permissionPresets/catalog');
+            if (catalog is Map) {
+              options = ((catalog)['options'] as List?)?.whereType<Map<String, dynamic>>().toList() ?? [];
+            }
+          } catch (_) {
+            // 旧 host 没有该端点：保持空选项，下面统一返回。
+          }
+        }
         if (options.isEmpty || !mounted) return;
         final chosen = await showModalBottomSheet<String>(
           context: context,
@@ -622,7 +650,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             await executeCommand(ref, widget.sessionId, '/permission $chosen');
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('切换权限模式失败: $e')));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.setPermissionFailed(e))));
             }
           }
         }
@@ -635,7 +663,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
             '${connection.baseUrl}/api/session.export?sessionId=${widget.sessionId}&includeDescendants=true');
         if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('无法打开导出链接')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.cannotOpenExport)));
           }
         }
       case 'rename':
@@ -643,12 +671,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         final title = await showDialog<String>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('重命名会话'),
+            title: Text(s.renameSessionTitle),
             content: TextField(controller: controller, autofocus: true),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+              TextButton(onPressed: () => Navigator.pop(context), child: Text(s.cancel)),
               FilledButton(
-                  onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('保存')),
+                  onPressed: () => Navigator.pop(context, controller.text.trim()), child: Text(s.save)),
             ],
           ),
         );
@@ -659,11 +687,11 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         try {
           final childId = await forkSession(ref, widget.sessionId);
           if (childId != null && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已分叉为新会话')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.forked)));
           }
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('分叉失败: $e')));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.forkFailed(e))));
           }
         }
       case 'archive':
@@ -673,6 +701,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _showSubagentsSheet() async {
+    final s = ref.read(stringsProvider);
     // refresh 强制重取——FutureProvider 会缓存上次结果，sheet 每次打开都要最新列表。
     final entries = await ref.refresh(subagentListProvider(widget.sessionId).future);
     if (!mounted) return;
@@ -682,9 +711,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       builder: (context) {
         final theme = Theme.of(context);
         if (entries.isEmpty) {
-          return const Padding(
-            padding: EdgeInsets.all(32),
-            child: Center(child: Text('这个会话还没有子代理')),
+          return Padding(
+            padding: const EdgeInsets.all(32),
+            child: Center(child: Text(s.noSubagents)),
           );
         }
         return ListView(
@@ -695,7 +724,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                 ListTile(
                   dense: true,
                   leading: Icon(Icons.warning_amber, size: 18, color: theme.colorScheme.error),
-                  title: Text('诊断：${entry.diagnosticReason}'),
+                  title: Text(s.diagnostic(entry.diagnosticReason!)),
                   subtitle: Text(entry.id, maxLines: 1, overflow: TextOverflow.ellipsis),
                 )
               else
@@ -708,8 +737,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                   ),
                   title: Text(entry.label ?? entry.id, maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Text(
-                    '${entry.mode == 'continuable' ? '可续聊' : '一次性'}'
-                    '${entry.hasChildren ? ' · 有子级' : ''}',
+                    (entry.mode == 'continuable' ? s.continuable : s.oneshot) +
+                        (entry.hasChildren ? s.hasChildren : ''),
                     style: theme.textTheme.bodySmall,
                   ),
                   onTap: () {
@@ -821,7 +850,7 @@ class _AssistantRow extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final block in item.blocks) ..._renderBlock(block, theme, sessionId),
+            for (final block in item.blocks) ..._renderBlock(block, theme, sessionId, ref.watch(stringsProvider)),
             if (item.streaming)
               const Padding(
                 padding: EdgeInsets.only(top: 4),
@@ -850,7 +879,7 @@ class _AssistantRow extends ConsumerWidget {
     );
   }
 
-  List<Widget> _renderBlock(AssistantBlock block, ThemeData theme, String sessionId) {
+  List<Widget> _renderBlock(AssistantBlock block, ThemeData theme, String sessionId, S s) {
     switch (block) {
       case TextBlock(text: final text):
         if (text.trim().isEmpty) return const [];
@@ -861,7 +890,7 @@ class _AssistantRow extends ConsumerWidget {
         return [
           _Collapsible(
             icon: Icons.psychology_alt_outlined,
-            label: '思考过程',
+            label: s.thinking,
             child: Text(text, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
           ),
         ];
@@ -869,7 +898,7 @@ class _AssistantRow extends ConsumerWidget {
         return [
           _Collapsible(
             icon: Icons.build_outlined,
-            label: '调用 $name',
+            label: s.callTool(name),
             child: Text(args, style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace')),
           ),
         ];
@@ -948,19 +977,19 @@ class _ApprovalCard extends ConsumerWidget {
 
   final ApprovalItem item;
 
-  static const _outcomeLabels = {
-    'allowed-once': '已批准',
-    'rejected': '已拒绝',
-    'cancelled': '已取消',
-    'unavailable': '已失效',
-  };
-
   Future<void> _answer(WidgetRef ref, ChatScope scope, bool approved) async {
     await ref.read(chatProvider(scope).notifier).answerApproval(approved);
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
+    final outcomeLabels = {
+      'allowed-once': s.approved,
+      'rejected': s.rejected,
+      'cancelled': s.cancelled,
+      'unavailable': s.expired,
+    };
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final scope = ref.watch(currentChatScopeProvider);
@@ -970,10 +999,10 @@ class _ApprovalCard extends ConsumerWidget {
     final outcome = item.outcome;
 
     final (chipLabel, chipColor) = switch (outcome) {
-      'allowed-once' => (_outcomeLabels[outcome]!, scheme.tertiary),
-      'rejected' => (_outcomeLabels[outcome]!, scheme.error),
+      'allowed-once' => (outcomeLabels[outcome]!, scheme.tertiary),
+      'rejected' => (outcomeLabels[outcome]!, scheme.error),
       null => ('', scheme.onSurfaceVariant),
-      _ => (_outcomeLabels[outcome] ?? outcome, scheme.onSurfaceVariant),
+      _ => (outcomeLabels[outcome] ?? outcome, scheme.onSurfaceVariant),
     };
 
     return Card(
@@ -989,7 +1018,7 @@ class _ApprovalCard extends ConsumerWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    outcome == null ? '批准 ${item.toolName}？' : '审批 ${item.toolName}',
+                    outcome == null ? s.approveToolQ(item.toolName) : s.approvalOf(item.toolName),
                     style: theme.textTheme.titleSmall,
                   ),
                 ),
@@ -1016,19 +1045,19 @@ class _ApprovalCard extends ConsumerWidget {
                 children: [
                   TextButton(
                     onPressed: () => _answer(ref, scope, false),
-                    child: const Text('拒绝'),
+                    child: Text(s.reject),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
                     onPressed: () => _answer(ref, scope, true),
-                    child: const Text('批准'),
+                    child: Text(s.approve),
                   ),
                 ],
               ),
             ] else if (outcome == null) ...[
               const SizedBox(height: 6),
               Text(
-                '等待主机确认中…',
+                s.waitingHost,
                 style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
               ),
             ],
@@ -1125,7 +1154,7 @@ class _QueueStrip extends ConsumerWidget {
       builder: (context) => SafeArea(
         child: ListTile(
           leading: const Icon(Icons.delete_outline),
-          title: const Text('从队列移除'),
+          title: Text(container.read(stringsProvider).removeFromQueue),
           onTap: () {
             Navigator.pop(context);
             container.read(chatProvider(scope).notifier).updateQueueItem(item.id, remove: true);
@@ -1164,16 +1193,16 @@ class _QueueStrip extends ConsumerWidget {
   }
 }
 
-class _QuestionSheet extends StatefulWidget {
+class _QuestionSheet extends ConsumerStatefulWidget {
   const _QuestionSheet({required this.questions});
 
   final List<QuestionItem> questions;
 
   @override
-  State<_QuestionSheet> createState() => _QuestionSheetState();
+  ConsumerState<_QuestionSheet> createState() => _QuestionSheetState();
 }
 
-class _QuestionSheetState extends State<_QuestionSheet> {
+class _QuestionSheetState extends ConsumerState<_QuestionSheet> {
   /// question id -> selected labels
   final Map<String, Set<String>> _selected = {};
 
@@ -1182,6 +1211,7 @@ class _QuestionSheetState extends State<_QuestionSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     return SafeArea(
       child: SingleChildScrollView(
@@ -1221,9 +1251,9 @@ class _QuestionSheetState extends State<_QuestionSheet> {
                   }),
                 ),
               TextField(
-                decoration: const InputDecoration(
-                  labelText: '自定义回答（可选）',
-                  border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  labelText: s.customAnswer,
+                  border: const OutlineInputBorder(),
                   isDense: true,
                 ),
                 onChanged: (value) => _custom[q.id] = value,
@@ -1232,7 +1262,7 @@ class _QuestionSheetState extends State<_QuestionSheet> {
             ],
             FilledButton(
               onPressed: _canSubmit() ? _submit : null,
-              child: const Text('提交'),
+              child: Text(s.submit),
             ),
           ],
         ),
@@ -1394,12 +1424,13 @@ class _GoalBanner extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final (icon, label, color) = switch (goal.phase) {
-      'active' => (Icons.flag, '进行中', theme.colorScheme.tertiary),
-      'paused' => (Icons.pause_circle_outline, '已暂停', theme.colorScheme.secondary),
-      'blocked' => (Icons.error_outline, '受阻', theme.colorScheme.error),
-      'complete' => (Icons.check_circle_outline, '已完成', theme.colorScheme.primary),
+      'active' => (Icons.flag, s.goalInProgress, theme.colorScheme.tertiary),
+      'paused' => (Icons.pause_circle_outline, s.goalPaused, theme.colorScheme.secondary),
+      'blocked' => (Icons.error_outline, s.goalBlocked, theme.colorScheme.error),
+      'complete' => (Icons.check_circle_outline, s.goalComplete, theme.colorScheme.primary),
       _ => (Icons.flag_outlined, goal.phase, theme.colorScheme.outline),
     };
     return Container(
@@ -1416,7 +1447,7 @@ class _GoalBanner extends ConsumerWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              '${goal.objective}${goal.maxGoalRounds > 0 ? '（${goal.roundsStarted}/${goal.maxGoalRounds} 轮）' : ''}',
+              '${goal.objective}${goal.maxGoalRounds > 0 ? s.goalRounds(goal.roundsStarted, goal.maxGoalRounds) : ''}',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall,
@@ -1425,25 +1456,25 @@ class _GoalBanner extends ConsumerWidget {
           if (goal.phase == 'active')
             IconButton(
               icon: const Icon(Icons.pause, size: 18),
-              tooltip: '暂停目标',
+              tooltip: s.pauseGoal,
               onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('pause'),
             ),
           if (goal.phase == 'paused' || goal.phase == 'blocked')
             IconButton(
               icon: const Icon(Icons.play_arrow, size: 18),
-              tooltip: '恢复目标',
+              tooltip: s.resumeGoal,
               onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('resume'),
             ),
           if (goal.phase == 'active' || goal.phase == 'paused')
             IconButton(
               icon: const Icon(Icons.check, size: 18),
-              tooltip: '标记完成',
+              tooltip: s.completeGoal,
               onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('complete'),
             ),
           if (goal.phase == 'complete' || goal.phase == 'blocked')
             IconButton(
               icon: const Icon(Icons.close, size: 18),
-              tooltip: '关闭目标横幅',
+              tooltip: s.dismissGoalBanner,
               onPressed: () => ref.read(chatProvider(scope).notifier).goalAction('clear'),
             ),
         ],
@@ -1475,7 +1506,7 @@ class SessionImage extends ConsumerWidget {
     final cached = _cache[_id];
     if (cached != null) return cached;
     final connection = ref.read(connectionProvider);
-    if (connection == null) throw StateError('未连接');
+    if (connection == null) throw StateError(ref.read(stringsProvider).notConnected);
     final value = await connection.api.rpc('session/attachment', {
       'request': {'sessionId': sessionId, 'attachmentId': _id},
     });
@@ -1559,6 +1590,7 @@ class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     return SafeArea(
       child: Padding(
@@ -1572,14 +1604,14 @@ class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('这条回答怎么样？', style: theme.textTheme.titleMedium),
+            Text(s.feedbackQuestion, style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: _RatingButton(
                     icon: Icons.thumb_up_alt_outlined,
-                    label: '有帮助',
+                    label: s.helpful,
                     selected: _rating == 'positive',
                     color: theme.colorScheme.tertiary,
                     onTap: () => setState(() => _rating = 'positive'),
@@ -1589,7 +1621,7 @@ class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
                 Expanded(
                   child: _RatingButton(
                     icon: Icons.thumb_down_alt_outlined,
-                    label: '有问题',
+                    label: s.problematic,
                     selected: _rating == 'negative',
                     color: theme.colorScheme.error,
                     onTap: () => setState(() => _rating = 'negative'),
@@ -1600,7 +1632,7 @@ class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
             const SizedBox(height: 12),
             TextField(
               controller: _note,
-              decoration: const InputDecoration(labelText: '备注（可选）'),
+              decoration: InputDecoration(labelText: s.feedbackNote),
               maxLines: 2,
             ),
             const SizedBox(height: 16),
@@ -1616,10 +1648,10 @@ class _FeedbackSheetState extends ConsumerState<_FeedbackSheet> {
                       } catch (e) {
                         if (!context.mounted) return;
                         ScaffoldMessenger.of(context)
-                            .showSnackBar(SnackBar(content: Text('提交失败: $e')));
+                            .showSnackBar(SnackBar(content: Text(s.feedbackFailed(e))));
                       }
                     },
-              child: const Text('提交反馈'),
+              child: Text(s.feedbackSubmit),
             ),
           ],
         ),
@@ -1659,20 +1691,21 @@ class _RatingButton extends StatelessWidget {
 
 /// 待办条：`todos` 投影（todo/write 的最新整表，turn/start 清空）。
 /// 折叠显示进度，点击展开每项状态。
-class _TodoBar extends StatefulWidget {
+class _TodoBar extends ConsumerStatefulWidget {
   const _TodoBar({required this.projections});
 
   final Map<String, dynamic> projections;
 
   @override
-  State<_TodoBar> createState() => _TodoBarState();
+  ConsumerState<_TodoBar> createState() => _TodoBarState();
 }
 
-class _TodoBarState extends State<_TodoBar> {
+class _TodoBarState extends ConsumerState<_TodoBar> {
   bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final raw = widget.projections['todos'];
     if (raw is! List) return const SizedBox.shrink();
     final todos = raw.whereType<Map<String, dynamic>>().toList();
@@ -1698,7 +1731,7 @@ class _TodoBarState extends State<_TodoBar> {
                 children: [
                   Icon(Icons.task_alt, size: 16, color: theme.colorScheme.primary),
                   const SizedBox(width: 8),
-                  Expanded(child: Text('任务清单 $done/${todos.length}', style: theme.textTheme.bodySmall)),
+                  Expanded(child: Text(s.todoProgress(done, todos.length), style: theme.textTheme.bodySmall)),
                   Icon(_expanded ? Icons.expand_less : Icons.expand_more,
                       size: 16, color: theme.colorScheme.onSurfaceVariant),
                 ],
@@ -1739,13 +1772,14 @@ class _TodoBarState extends State<_TodoBar> {
 }
 
 /// 计划模式横幅：`plan` 投影 {active, pending}。
-class _PlanBanner extends StatelessWidget {
+class _PlanBanner extends ConsumerWidget {
   const _PlanBanner({required this.projections});
 
   final Map<String, dynamic> projections;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final raw = projections['plan'];
     if (raw is! Map<String, dynamic>) return const SizedBox.shrink();
     final active = raw['active'] == true;
@@ -1765,7 +1799,7 @@ class _PlanBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              pending ? '计划模式（等待生效）' : '计划模式：先出方案再动手',
+              pending ? s.planModePending : s.planModeActive,
               style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onPrimaryContainer),
             ),
           ),
@@ -1815,6 +1849,7 @@ class _JobsStrip extends StatelessWidget {
 /// 助手消息长按操作菜单：复制全文 / 反馈。
 void _showMessageActions(
     BuildContext context, WidgetRef ref, String sessionId, String messageId, String? rating) {
+  final s = ref.read(stringsProvider);
   showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
@@ -1824,7 +1859,7 @@ void _showMessageActions(
         children: [
           ListTile(
             leading: const Icon(Icons.copy_outlined),
-            title: const Text('复制全文'),
+            title: Text(s.copyAll),
             onTap: () async {
               final chat = ref.read(chatProvider(ref.watch(currentChatScopeProvider)));
               final item = chat.items.whereType<AssistantItem>().where((i) => i.messageId == messageId).firstOrNull;
@@ -1833,8 +1868,8 @@ void _showMessageActions(
                     .map((b) => switch (b) {
                           TextBlock() => b.text,
                           ReasoningBlock() => b.text,
-                          ToolCallBlock() => '[工具调用 \${b.name}]',
-                          ImageBlock() => '[图片]',
+                          ToolCallBlock() => s.toolCallSnippet(b.name),
+                          ImageBlock() => s.imageSnippet,
                           OtherBlock() => '',
                         })
                     .where((t) => t.isNotEmpty)
@@ -1844,14 +1879,14 @@ void _showMessageActions(
               if (sheetContext.mounted) {
                 Navigator.pop(sheetContext);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已复制到剪贴板'), duration: Duration(seconds: 1)),
+                  SnackBar(content: Text(s.copiedToClipboard), duration: const Duration(seconds: 1)),
                 );
               }
             },
           ),
           ListTile(
             leading: const Icon(Icons.thumbs_up_down_outlined),
-            title: const Text('反馈（赞/踩）'),
+            title: Text(s.feedbackTooltip),
             onTap: () {
               Navigator.pop(sheetContext);
               showModalBottomSheet<void>(
@@ -1869,25 +1904,26 @@ void _showMessageActions(
 }
 
 /// 系统注入消息卡片（子代理通报等）：左侧小图标 + 灰底，长文可折叠。
-class _SystemCard extends StatefulWidget {
+class _SystemCard extends ConsumerStatefulWidget {
   const _SystemCard({required this.item});
 
   final SystemItem item;
 
   @override
-  State<_SystemCard> createState() => _SystemCardState();
+  ConsumerState<_SystemCard> createState() => _SystemCardState();
 }
 
-class _SystemCardState extends State<_SystemCard> {
+class _SystemCardState extends ConsumerState<_SystemCard> {
   bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final theme = Theme.of(context);
     final (icon, label) = switch (widget.item.kind) {
-      'subagent-report' => (Icons.smart_toy_outlined, '子代理汇报'),
-      'subagent-settled' => (Icons.check_circle_outline, '子代理完成'),
-      _ => (Icons.info_outline, '系统'),
+      'subagent-report' => (Icons.smart_toy_outlined, s.subagentReport),
+      'subagent-settled' => (Icons.check_circle_outline, s.subagentDone),
+      _ => (Icons.info_outline, s.systemKind),
     };
     final long = widget.item.text.length > 160;
     return Container(
@@ -1932,23 +1968,16 @@ class _SystemCardState extends State<_SystemCard> {
 }
 
 /// 模型工作中的等待提示：思考中的猫娘插图 + 俏皮文案 + 省略号动画。
-class _WorkingIndicator extends StatefulWidget {
+class _WorkingIndicator extends ConsumerStatefulWidget {
   const _WorkingIndicator();
 
   @override
-  State<_WorkingIndicator> createState() => _WorkingIndicatorState();
+  ConsumerState<_WorkingIndicator> createState() => _WorkingIndicatorState();
 }
 
-class _WorkingIndicatorState extends State<_WorkingIndicator>
+class _WorkingIndicatorState extends ConsumerState<_WorkingIndicator>
     with SingleTickerProviderStateMixin {
   late final AnimationController _dots;
-
-  static const _copy = [
-    '妮可咪正在努力思考喵',
-    '猫娘大脑飞速运转中',
-    '正在给主人攒一个好回答',
-    '喵呜喵呜地敲着代码',
-  ];
 
   @override
   void initState() {
@@ -1965,9 +1994,10 @@ class _WorkingIndicatorState extends State<_WorkingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final copy = ref.watch(stringsProvider).workingHints;
     final theme = Theme.of(context);
     // 按时间轮播文案（每 3 秒一条）
-    final line = _copy[(DateTime.now().millisecondsSinceEpoch ~/ 3000) % _copy.length];
+    final line = copy[(DateTime.now().millisecondsSinceEpoch ~/ 3000) % copy.length];
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

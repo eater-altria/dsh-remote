@@ -7,6 +7,7 @@ import '../api/client.dart';
 import '../api/download_service.dart';
 import '../api/models.dart';
 import '../api/push_dedupe.dart';
+import '../state/app_settings.dart';
 import '../state/providers.dart';
 import 'chat_page.dart';
 import 'inbox_page.dart';
@@ -44,22 +45,23 @@ class _HomePageState extends ConsumerState<HomePage> {
     final id = meta['id'] as String? ?? '';
     if (!await _pushDedupe.markIfNew(id)) return; // 补发/已处理去重
     if (!mounted) return;
-    final name = meta['name'] as String? ?? '文件';
+    final s = ref.read(stringsProvider);
+    final name = meta['name'] as String? ?? s.fileFallback;
     final bytes = (meta['bytes'] as num?)?.toInt() ?? 0;
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.download_outlined),
-        title: const Text('收到文件'),
-        content: Text('$name（${_formatBytes(bytes)}）\n保存到手机「下载」目录？'),
+        title: Text(s.fileReceived),
+        content: Text(s.fileSavePrompt(name, _formatBytes(bytes))),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('忽略')),
+          TextButton(onPressed: () => Navigator.pop(context), child: Text(s.ignore)),
           FilledButton(
             onPressed: () async {
               Navigator.pop(context);
               await _download(meta);
             },
-            child: const Text('保存到手机'),
+            child: Text(s.saveToPhone),
           ),
         ],
       ),
@@ -67,6 +69,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Future<void> _download(Map<String, dynamic> meta) async {
+    final s = ref.read(stringsProvider);
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     final ok = await launchFileDownload(
@@ -78,7 +81,7 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(ok ? '已开始下载，进度见通知栏' : '下载失败')),
+        SnackBar(content: Text(ok ? s.downloadStarted : s.downloadFailed)),
       );
     }
   }
@@ -98,6 +101,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   @override
   Widget build(BuildContext context) {
     final ref = this.ref;
+    final s = ref.watch(stringsProvider);
     final roster = ref.watch(rosterProvider);
     final connection = ref.watch(connectionProvider);
     final theme = Theme.of(context);
@@ -116,12 +120,12 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
           IconButton(
             icon: const Icon(Icons.search),
-            tooltip: '搜索会话内容',
-            onPressed: () => showSearch(context: context, delegate: _SessionSearchDelegate()),
+            tooltip: s.searchSessions,
+            onPressed: () => showSearch(context: context, delegate: _SessionSearchDelegate(s: s)),
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: '刷新',
+            tooltip: s.refresh,
             onPressed: () => ref.read(rosterProvider.notifier).refresh(),
           ),
           PopupMenuButton<String>(
@@ -148,9 +152,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         for (final (value, label, icon) in [
-                          ('system', '跟随系统', Icons.brightness_auto),
-                          ('light', '浅色（奶蓝樱花）', Icons.light_mode_outlined),
-                          ('dark', '深色（暗夜粉彩）', Icons.dark_mode_outlined),
+                          ('system', s.themeFollowSystem, Icons.brightness_auto),
+                          ('light', s.themeLight, Icons.light_mode_outlined),
+                          ('dark', s.themeDark, Icons.dark_mode_outlined),
                         ])
                           ListTile(
                             leading: Icon(icon),
@@ -167,21 +171,21 @@ class _HomePageState extends ConsumerState<HomePage> {
                 }
               }
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'new_workspace', child: Text('新建 Workspace')),
-              PopupMenuItem(value: 'inbox', child: Text('文件收件箱')),
-              PopupMenuItem(value: 'theme', child: Text('外观主题')),
-              PopupMenuItem(value: 'settings', child: Text('设置')),
-              PopupMenuItem(value: 'hosts', child: Text('返回主机列表')),
+            itemBuilder: (context) => [
+              PopupMenuItem(value: 'new_workspace', child: Text(s.newWorkspace)),
+              PopupMenuItem(value: 'inbox', child: Text(s.inboxTitle)),
+              PopupMenuItem(value: 'theme', child: Text(s.appearance)),
+              PopupMenuItem(value: 'settings', child: Text(s.settingsTitle)),
+              PopupMenuItem(value: 'hosts', child: Text(s.backToHosts)),
             ],
           ),
         ],
       ),
-      body: _buildBody(context, ref, roster, theme),
+      body: _buildBody(context, ref, s, roster, theme),
     );
   }
 
-  Widget _buildBody(BuildContext context, WidgetRef ref, RosterState roster, ThemeData theme) {
+  Widget _buildBody(BuildContext context, WidgetRef ref, S s, RosterState roster, ThemeData theme) {
     if (roster.loading && roster.sessions.isEmpty && roster.workspaces.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -192,13 +196,13 @@ class _HomePageState extends ConsumerState<HomePage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('加载失败', style: theme.textTheme.titleMedium),
+              Text(s.loadFailed, style: theme.textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(roster.error!, style: theme.textTheme.bodySmall, textAlign: TextAlign.center),
               const SizedBox(height: 16),
               FilledButton(
                 onPressed: () => ref.read(rosterProvider.notifier).refresh(),
-                child: const Text('重试'),
+                child: Text(s.retry),
               ),
             ],
           ),
@@ -224,7 +228,7 @@ class _HomePageState extends ConsumerState<HomePage> {
       if (sessions.isEmpty) {
         sections.add(Padding(
           padding: const EdgeInsets.only(left: 16, bottom: 8),
-          child: Text('（无会话）',
+          child: Text(s.noSessions,
               style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
         ));
       } else {
@@ -233,10 +237,14 @@ class _HomePageState extends ConsumerState<HomePage> {
     }
 
     final ungrouped = roster.sessions
-        .where((s) => !grouped.contains(s.sessionId) && !s.blank && !s.isSubagent)
+        .where((s) =>
+            !grouped.contains(s.sessionId) &&
+            !s.blank &&
+            !s.isSubagent &&
+            !roster.archivedSessionIds.contains(s.sessionId))
         .toList();
     if (ungrouped.isNotEmpty) {
-      sections.add(const _SectionHeader(title: '未分组'));
+      sections.add(_SectionHeader(title: s.ungrouped));
       sections.addAll(ungrouped.map((s) => _SessionTile(session: s)));
     }
 
@@ -247,12 +255,12 @@ class _HomePageState extends ConsumerState<HomePage> {
           children: [
             const NekoHero(size: 156),
             const SizedBox(height: 12),
-            const Text('还没有会话，去发起第一段对话吧'),
+            Text(s.emptyRoster),
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: () => _createSession(context, ref),
               icon: const PawIcon(size: 18),
-              label: const Text('新建会话'),
+              label: Text(s.newSession),
             ),
           ],
         ),
@@ -266,6 +274,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Future<void> _createSession(BuildContext context, WidgetRef ref, {String? workspaceId}) async {
+    final s = ref.read(stringsProvider);
     final connection = ref.read(connectionProvider);
     if (connection == null) return;
     // 有 preset 目录时让主人选择；'default' = 默认组合，null = 取消创建。
@@ -281,9 +290,9 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Text('选择 Agent 组合', style: TextStyle(fontWeight: FontWeight.w600)),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(s.chooseAgentPreset, style: const TextStyle(fontWeight: FontWeight.w600)),
                 ),
                 for (final p in presets)
                   ListTile(
@@ -294,7 +303,7 @@ class _HomePageState extends ConsumerState<HomePage> {
                     subtitle: p.description != null
                         ? Text(p.description!, maxLines: 1, overflow: TextOverflow.ellipsis)
                         : null,
-                    trailing: p.isDefault ? const Text('默认') : null,
+                    trailing: p.isDefault ? Text(s.defaultLabel) : null,
                     enabled: p.brokenReason == null,
                     onTap: () => Navigator.pop(context, p.isDefault ? 'default' : p.id),
                   ),
@@ -328,12 +337,13 @@ class _HomePageState extends ConsumerState<HomePage> {
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('创建会话失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.createSessionFailed(e))));
       }
     }
   }
 
   Future<void> _createWorkspace(BuildContext context, WidgetRef ref) async {
+    final s = ref.read(stringsProvider);
     final path = await showDialog<String>(
       context: context,
       builder: (context) => const _DirectoryPickerDialog(),
@@ -348,26 +358,27 @@ class _HomePageState extends ConsumerState<HomePage> {
       await ref.read(rosterProvider.notifier).refresh();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('创建 Workspace 失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.createWorkspaceFailed(e))));
       }
     }
   }
 }
 
-class _StatusChip extends StatelessWidget {
+class _StatusChip extends ConsumerWidget {
   const _StatusChip({required this.connection});
 
   final DshConnection connection;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final scheme = Theme.of(context).colorScheme;
     final (color, label) = switch (connection.status) {
-      ConnStatus.connected => (scheme.tertiary, '已连接'),
-      ConnStatus.connecting => (scheme.secondary, '连接中'),
-      ConnStatus.reconnecting => (scheme.secondary, '重连中'),
-      ConnStatus.failed => (scheme.error, '失败'),
-      ConnStatus.disconnected => (scheme.outline, '离线'),
+      ConnStatus.connected => (scheme.tertiary, s.statusConnected),
+      ConnStatus.connecting => (scheme.secondary, s.statusConnecting),
+      ConnStatus.reconnecting => (scheme.secondary, s.statusReconnecting),
+      ConnStatus.failed => (scheme.error, s.statusFailed),
+      ConnStatus.disconnected => (scheme.outline, s.statusOffline),
     };
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -401,6 +412,7 @@ class _WorkspaceHeader extends ConsumerWidget {
   final VoidCallback onNewSession;
 
   Future<void> _onLongPress(BuildContext context, WidgetRef ref) async {
+    final s = ref.read(stringsProvider);
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -410,12 +422,12 @@ class _WorkspaceHeader extends ConsumerWidget {
           children: [
             ListTile(
               leading: const Icon(Icons.edit_outlined),
-              title: const Text('重命名 Workspace'),
+              title: Text(s.renameWorkspace),
               onTap: () => Navigator.pop(context, 'rename'),
             ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error),
-              title: const Text('删除 Workspace 注册（保留目录与会话）'),
+              title: Text(s.deleteWorkspaceKeepData),
               onTap: () => Navigator.pop(context, 'delete'),
             ),
           ],
@@ -432,13 +444,13 @@ class _WorkspaceHeader extends ConsumerWidget {
         final title = await showDialog<String>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('重命名 Workspace'),
+            title: Text(s.renameWorkspace),
             content: TextField(controller: controller, autofocus: true),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+              TextButton(onPressed: () => Navigator.pop(context), child: Text(s.cancel)),
               FilledButton(
                   onPressed: () => Navigator.pop(context, controller.text.trim()),
-                  child: const Text('保存')),
+                  child: Text(s.save)),
             ],
           ),
         );
@@ -452,12 +464,12 @@ class _WorkspaceHeader extends ConsumerWidget {
         final confirmed = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
-            title: const Text('删除 Workspace？'),
-            content: const Text('只移除注册信息；目录与会话日志都保留，会话变为未分组。'),
+            title: Text(s.deleteWorkspaceTitle),
+            content: Text(s.deleteWorkspaceBody),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+              TextButton(onPressed: () => Navigator.pop(context, false), child: Text(s.cancel)),
               FilledButton(
-                  onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+                  onPressed: () => Navigator.pop(context, true), child: Text(s.delete)),
             ],
           ),
         );
@@ -470,7 +482,7 @@ class _WorkspaceHeader extends ConsumerWidget {
       await ref.read(rosterProvider.notifier).refresh();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('操作失败: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.opFailed(e))));
       }
     }
   }
@@ -504,7 +516,7 @@ class _WorkspaceHeader extends ConsumerWidget {
             ),
             IconButton(
               icon: const Icon(Icons.add, size: 18),
-              tooltip: '在此 Workspace 新建会话',
+              tooltip: ref.watch(stringsProvider).newSessionInWorkspace,
               onPressed: onNewSession,
             ),
           ],
@@ -521,6 +533,7 @@ class _SessionTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final title = session.title?.isNotEmpty == true
         ? session.title!
         : (session.cwd != null ? session.cwd!.split('/').last : session.sessionId);
@@ -547,7 +560,7 @@ class _SessionTile extends ConsumerWidget {
         title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(
           '${updated.month}/${updated.day} ${updated.hour.toString().padLeft(2, '0')}:${updated.minute.toString().padLeft(2, '0')}'
-          '${session.running ? ' · 运行中' : ''}',
+          '${session.running ? s.runningSuffix : ''}',
           style: TextStyle(
             fontSize: 12,
             color: session.running ? scheme.tertiary : scheme.onSurfaceVariant,
@@ -566,11 +579,11 @@ class _SessionTile extends ConsumerWidget {
               children: [
                 ListTile(
                     leading: const Icon(Icons.edit_outlined),
-                    title: const Text('重命名'),
+                    title: Text(s.rename),
                     onTap: () => Navigator.pop(context, 'rename')),
                 ListTile(
                     leading: const Icon(Icons.archive_outlined),
-                    title: const Text('归档'),
+                    title: Text(s.archive),
                     onTap: () => Navigator.pop(context, 'archive')),
               ],
             ),
@@ -581,13 +594,13 @@ class _SessionTile extends ConsumerWidget {
           final title = await showDialog<String>(
             context: context,
             builder: (context) => AlertDialog(
-              title: const Text('重命名会话'),
+              title: Text(s.renameSessionTitle),
               content: TextField(controller: controller, autofocus: true),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                TextButton(onPressed: () => Navigator.pop(context), child: Text(s.cancel)),
                 FilledButton(
                     onPressed: () => Navigator.pop(context, controller.text.trim()),
-                    child: const Text('保存')),
+                    child: Text(s.save)),
               ],
             ),
           );
@@ -624,10 +637,11 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(stringsProvider);
     final listing = ref.watch(directoryListingProvider(_currentPath));
     final theme = Theme.of(context);
     return AlertDialog(
-      title: const Text('选择 Workspace 目录'),
+      title: Text(s.chooseWorkspaceDir),
       content: SizedBox(
         width: double.maxFinite,
         height: 380,
@@ -644,11 +658,11 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('读取失败: $e', textAlign: TextAlign.center),
+                    Text(s.readFailed(e), textAlign: TextAlign.center),
                     const SizedBox(height: 12),
                     TextButton(
                       onPressed: () => setState(() => _manual = true),
-                      child: const Text('改为手动输入路径'),
+                      child: Text(s.manualPathInstead),
                     ),
                   ],
                 ),
@@ -685,14 +699,14 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
                   ],
                 ),
               ),
-              Text('当前：${data.path}', style: theme.textTheme.bodySmall,
+              Text(s.currentPath(data.path), style: theme.textTheme.bodySmall,
                   maxLines: 1, overflow: TextOverflow.ellipsis),
             ],
           ),
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        TextButton(onPressed: () => Navigator.pop(context), child: Text(s.cancel)),
         FilledButton(
           onPressed: () {
             if (_manual || listing.hasError) {
@@ -701,7 +715,7 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
               Navigator.pop(context, listing.valueOrNull?.path);
             }
           },
-          child: Text(_manual || listing.hasError ? '使用此路径' : '选择此目录'),
+          child: Text(_manual || listing.hasError ? s.useThisPath : s.chooseThisDir),
         ),
       ],
     );
@@ -710,6 +724,10 @@ class _DirectoryPickerDialogState extends ConsumerState<_DirectoryPickerDialog> 
 
 /// 会话内容搜索（session.search）。
 class _SessionSearchDelegate extends SearchDelegate<String?> {
+  _SessionSearchDelegate({required this.s});
+
+  final S s;
+
   @override
   List<Widget>? buildActions(BuildContext context) => [
         if (query.isNotEmpty)
@@ -724,9 +742,8 @@ class _SessionSearchDelegate extends SearchDelegate<String?> {
   Widget buildResults(BuildContext context) => _SearchResults(query: query);
 
   @override
-  Widget buildSuggestions(BuildContext context) => query.trim().isEmpty
-      ? const Center(child: Text('输入关键词搜索会话内容'))
-      : _SearchResults(query: query);
+  Widget buildSuggestions(BuildContext context) =>
+      query.trim().isEmpty ? Center(child: Text(s.searchHint)) : _SearchResults(query: query);
 }
 
 class _SearchResults extends ConsumerWidget {
@@ -736,12 +753,13 @@ class _SearchResults extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     final results = ref.watch(sessionSearchProvider(query));
     return results.when(
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text('搜索失败: $e')),
+      error: (e, _) => Center(child: Text(s.searchFailed(e))),
       data: (items) {
-        if (items.isEmpty) return const Center(child: Text('没有匹配的会话'));
+        if (items.isEmpty) return Center(child: Text(s.noMatchingSessions));
         return ListView.builder(
           itemCount: items.length,
           itemBuilder: (context, i) {
@@ -765,25 +783,25 @@ class _SearchResults extends ConsumerWidget {
 }
 
 /// 目录浏览器降级：手动输入绝对路径。
-class _ManualPathInput extends StatelessWidget {
+class _ManualPathInput extends ConsumerWidget {
   const _ManualPathInput({required this.controller});
 
   final TextEditingController controller;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = ref.watch(stringsProvider);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('此主机只提供原生目录选择器，手机端请手动输入绝对路径：',
-            style: Theme.of(context).textTheme.bodySmall),
+        Text(s.nativePickerOnlyHint, style: Theme.of(context).textTheme.bodySmall),
         const SizedBox(height: 12),
         TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '目录路径',
+          decoration: InputDecoration(
+            labelText: s.dirPathLabel,
             hintText: '/Users/you/projects/demo',
           ),
         ),
